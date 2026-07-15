@@ -1,51 +1,15 @@
-"""
-constraints.py — Biochemical constraint enforcement for DNA Data Storage.
-
-Constraints implemented:
-  1. GC content: fraction of G/C bases must be in [gc_min, gc_max] (default 40–60 %).
-     Rationale: extreme GC content destabilizes hybridization and causes synthesis errors.
-     Ref: Grass et al., Nature Biotechnology 2015; Church et al., Science 2012.
-
-  2. Homopolymer runs: no base repeated more than `max_homopolymer` times consecutively
-     (default 3).  Long runs cause indel errors during synthesis and sequencing.
-     Ref: Organick et al., Nature Biotechnology 2018.
-
-  3. Forbidden subsequences: no DNA palindrome (self-complementary substring) longer than
-     `max_palindrome` bases (default 6).  Palindromes promote hairpin structures that
-     interfere with polymerase extension.
-     Ref: Yazdi et al., IEEE Trans. Mol. Biol. Multi-Scale Commun. 2015.
-
-When a sequence violates a constraint the encoder applies a *bit-stuffing* strategy:
-  - A special "escape" dinucleotide is inserted after every `window` bases to break runs
-    or shift GC balance.  This overhead is tracked and removed on decode.
-
-Public API
-----------
-  check(seq)           → ConstraintReport (dataclass with pass/fail per rule)
-  enforce(seq)         → (fixed_seq, metadata)
-  verify(seq)          → bool   (True iff all constraints pass)
-"""
-
 from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
 from typing import Optional
 
-# ---------------------------------------------------------------------------
-# Complement table
-# ---------------------------------------------------------------------------
 _COMPLEMENT: dict[str, str] = {"A": "T", "T": "A", "C": "G", "G": "C"}
-
 
 def reverse_complement(seq: str) -> str:
     """Return the reverse complement of a DNA sequence."""
     return "".join(_COMPLEMENT[b] for b in reversed(seq))
 
-
-# ---------------------------------------------------------------------------
-# Report dataclass
-# ---------------------------------------------------------------------------
 @dataclass
 class ConstraintReport:
     """Result of a constraint check on a single DNA sequence."""
@@ -54,16 +18,16 @@ class ConstraintReport:
     gc_content: float
     gc_ok: bool
     homopolymer_ok: bool
-    longest_homopolymer: int          # length of longest run found
+    longest_homopolymer: int
     palindrome_ok: bool
-    longest_palindrome: int           # length of longest palindrome found
+    longest_palindrome: int
     violations: list[str] = field(default_factory=list)
 
     @property
     def passed(self) -> bool:
         return self.gc_ok and self.homopolymer_ok and self.palindrome_ok
 
-    def __str__(self) -> str:  # pragma: no cover
+    def __str__(self) -> str:
         status = "PASS" if self.passed else "FAIL"
         return (
             f"[{status}] GC={self.gc_content:.1%} "
@@ -72,10 +36,6 @@ class ConstraintReport:
             + (f"violations={self.violations}" if self.violations else "")
         )
 
-
-# ---------------------------------------------------------------------------
-# Core checker
-# ---------------------------------------------------------------------------
 class ConstraintChecker:
     """
     Validates a DNA sequence against a set of biochemical constraints.
@@ -103,10 +63,6 @@ class ConstraintChecker:
         self.gc_max = gc_max
         self.max_homopolymer = max_homopolymer
         self.max_palindrome = max_palindrome
-
-    # ------------------------------------------------------------------
-    # Individual rule checks
-    # ------------------------------------------------------------------
 
     def gc_content(self, seq: str) -> float:
         """Fraction of bases that are G or C."""
@@ -143,17 +99,12 @@ class ConstraintChecker:
             return 0
         n = len(seq)
         best = 0
-        # Check all substrings of length ≥ 4
         for start in range(n):
             for length in range(4, n - start + 1):
                 sub = seq[start : start + length]
                 if sub == reverse_complement(sub):
                     best = max(best, length)
         return best
-
-    # ------------------------------------------------------------------
-    # Full check
-    # ------------------------------------------------------------------
 
     def check(self, seq: str) -> ConstraintReport:
         """
@@ -191,19 +142,11 @@ class ConstraintChecker:
         """Return True iff *seq* passes all constraints."""
         return self.check(seq).passed
 
-
-# ---------------------------------------------------------------------------
-# Constraint enforcer — bit-stuffing / base substitution strategy
-# ---------------------------------------------------------------------------
-
-# Mapping used by the encoder (2-bit → base)
 _BITS_TO_BASE = ["A", "C", "G", "T"]
 _BASE_TO_BITS = {b: i for i, b in enumerate(_BITS_TO_BASE)}
 
-# Bases ordered by GC contribution: AT first (low GC), then GC
 _LOW_GC  = ["A", "T"]
 _HIGH_GC = ["G", "C"]
-
 
 class ConstraintEnforcer:
     """
@@ -232,21 +175,15 @@ class ConstraintEnforcer:
     stored in the index header — zero payload overhead.
     """
 
-    # Rotation table: given previous base index p, maps 2-bit value v → new base
-    # Rotation[p][v] = (p + v + 1) % 4  so consecutive identical bits → different bases
     _ROTATIONS: list[list[str]] = [
-        ["C", "G", "T", "A"],  # prev = A (index 0)
-        ["G", "T", "A", "C"],  # prev = C (index 1)
-        ["T", "A", "C", "G"],  # prev = G (index 2)
-        ["A", "C", "G", "T"],  # prev = T (index 3)
+        ["C", "G", "T", "A"],
+        ["G", "T", "A", "C"],
+        ["T", "A", "C", "G"],
+        ["A", "C", "G", "T"],
     ]
 
     def __init__(self, checker: Optional[ConstraintChecker] = None) -> None:
         self.checker = checker or ConstraintChecker()
-
-    # ------------------------------------------------------------------
-    # Rotation encode/decode
-    # ------------------------------------------------------------------
 
     def rotation_encode(self, bits: list[int], start_base: str = "A") -> str:
         """
@@ -283,10 +220,6 @@ class ConstraintEnforcer:
             bits.append(v)
             prev_idx = _BASE_TO_BITS[base]
         return bits
-
-    # ------------------------------------------------------------------
-    # Convenience: find best start_base to satisfy GC constraint
-    # ------------------------------------------------------------------
 
     def best_start_base(self, bits: list[int]) -> str:
         """
