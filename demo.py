@@ -1,28 +1,4 @@
 #!/usr/bin/env python3
-"""
-demo.py — End-to-end demonstration of the dna_codec pipeline.
-
-Pipeline stages
----------------
-  1. constraints / encoder  — turn arbitrary bytes into a biologically
-                               valid DNA sequence (GC-content, homopolymer,
-                               and secondary-structure constraints).
-  2. oligos                 — fragment the master sequence into
-                               synthesis-length oligos with primers,
-                               indices, and overlap between neighbours.
-  3. ecc.reed_solomon        — add Reed-Solomon redundancy (row parity per
-                               oligo + column parity across the pool) so
-                               that lost or corrupted oligos can be
-                               reconstructed.
-  4. channel.simulator       — simulate a noisy synthesis/sequencing
-                               channel: substitutions, insertions,
-                               deletions, and oligo dropout.
-  5. decoder / ecc           — recover the original bytes from the noisy
-                               oligo pool and verify integrity via SHA-256.
-
-Run:
-    python demo.py
-"""
 
 from __future__ import annotations
 
@@ -36,7 +12,6 @@ from dna_codec.codec.decoder import DNADecoder
 from dna_codec.codec.ecc.reed_solomon import RSCodec
 from dna_codec.channel.simulator import ChannelSimulator
 
-
 MESSAGE = (
     b"Hello, DNA data storage world! This is an end-to-end demonstration "
     b"of the full pipeline: encoding, oligo synthesis, noisy channel "
@@ -44,13 +19,11 @@ MESSAGE = (
     b"the original message."
 )
 
-
 def banner(title: str) -> None:
     print()
     print("=" * 78)
     print(title)
     print("=" * 78)
-
 
 def scenario_with_ecc(message: bytes, seed: int = 1) -> None:
     """Realistic scenario: oligo dropout, corrected via Reed-Solomon."""
@@ -60,7 +33,6 @@ def scenario_with_ecc(message: bytes, seed: int = 1) -> None:
     pool = OligoPool(oligo_len=150, overlap=20, primer_len=20, index_len=8)
     rs = RSCodec(redundancy=0.30, col_redundancy=0.30)
 
-    # --- 1-2. Encode + fragment ---------------------------------------
     master = enc.encode_bytes(message)
     oligos = pool.fragment(master, enc.start_bases)
     n_data = len(oligos)
@@ -69,12 +41,10 @@ def scenario_with_ecc(message: bytes, seed: int = 1) -> None:
     print(f"DNA sequence length: {len(master)} bases")
     print(f"Data oligos:         {n_data}")
 
-    # --- 3. Add Reed-Solomon redundancy --------------------------------
     encoded = rs.encode_pool(oligos)
     extended = rs.add_column_parity(encoded, pool)
     print(f"Oligos with ECC (data + parity): {len(extended)}")
 
-    # --- 4. Simulate a noisy channel (synthesis/sequencing dropout) ----
     sim = ChannelSimulator(
         sub_rate=0.0, ins_rate=0.0, del_rate=0.0,
         dropout_rate=0.08, seed=seed,
@@ -83,7 +53,6 @@ def scenario_with_ecc(message: bytes, seed: int = 1) -> None:
     print(f"Oligos lost in channel: {stats.n_dropped} / {stats.n_oligos_in} "
           f"({stats.dropout_rate:.0%} dropout rate)")
 
-    # --- 5. Recover with column parity + RS decode ---------------------
     noisy.sort(key=lambda o: o.index)
     data_n = [o for o in noisy if o.index < n_data]
     parity_n = [o for o in noisy if o.index >= n_data]
@@ -106,7 +75,6 @@ def scenario_with_ecc(message: bytes, seed: int = 1) -> None:
     print()
     print("Recovered text:")
     print(textwrap.indent(textwrap.fill(final.decode(), 74), "  "))
-
 
 def scenario_without_ecc(message: bytes, seed: int = 11) -> None:
     """Lightweight scenario: no Reed-Solomon layer, just fragment + a
@@ -139,13 +107,11 @@ def scenario_without_ecc(message: bytes, seed: int = 11) -> None:
     print(f"SHA-256 verified: {report.sha256_ok}")
     print(f"Recovered message == original: {recovered == message}")
 
-
 def main() -> None:
     random.seed(42)
     scenario_with_ecc(MESSAGE)
     scenario_without_ecc(MESSAGE)
     banner("Done")
-
 
 if __name__ == "__main__":
     main()
