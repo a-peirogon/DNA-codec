@@ -1,60 +1,3 @@
-"""
-decoder.py — Full DNA Data Storage decoder with indel-robust reconstruction.
-
-Decoding pipeline
------------------
-  Given a pool of (possibly noisy, reordered, partially lost) oligos:
-
-  1. Primer trimming & index recovery
-     Each oligo's full_seq is aligned against the known primer sequences.
-     Pairwise edit distance (Levenshtein) identifies the primer boundaries
-     even when substitutions or indels have shifted positions by a few bases.
-     The index field is parsed from the recovered inner region.
-
-  2. Oligo grouping by index
-     Oligos sharing the same index are grouped; duplicates are used in
-     per-position consensus (multiple reads of the same fragment).
-
-  3. Per-position consensus voting in overlap regions
-     Adjacent oligos share `overlap` bases.  When two oligos cover the same
-     master position, the base with the highest vote count wins.
-     Ties are broken by the oligo with the higher copy count.
-
-  4. Indel alignment with Smith-Waterman (local alignment)
-     For oligos whose payload length differs from the expected length (due to
-     channel indels), a local sequence alignment realigns the payload to the
-     reference grid before consensus voting.
-
-  5. RS Level-1 decoding (per-oligo)
-     Applied to each recovered payload before assembly when RS was used.
-
-  6. RS Level-2 (column parity) recovery
-     Used to reconstruct completely missing index positions.
-
-  7. Master sequence assembly
-     Ordered payloads are concatenated (with overlap consensus) to recover
-     the master ACGT sequence produced by the encoder.
-
-  8. Rotation decode + SHA-256 verification
-     The master sequence is decoded via DNAEncoder.decode_sequence(); the
-     embedded SHA-256 digest is verified against the recovered data.
-
-References
-----------
-  Smith, T.F. & Waterman, M.S. (1981). Identification of common molecular
-    subsequences. Journal of Molecular Biology, 147(1), 195–197.
-  Levenshtein, V.I. (1966). Binary codes capable of correcting deletions,
-    insertions, and reversals. Soviet Physics Doklady, 10, 707–710.
-  Organick et al. (2018). Random access in large-scale DNA data storage.
-    Nature Biotechnology, 36(3), 242–248.
-
-Public API
-----------
-  DNADecoder(pool, encoder, rs_codec=None)
-  decoder.decode(oligos)  → (bytes, DecodeReport)
-  decoder.decode_fasta(path) → (bytes, DecodeReport)
-"""
-
 from __future__ import annotations
 
 import hashlib
@@ -66,10 +9,6 @@ from typing import Optional
 from dna_codec.codec.encoder import DNAEncoder
 from dna_codec.codec.oligos import OligoPool, Oligo, _bases_to_int, _FLAG_DEC
 from dna_codec.codec.constraints import reverse_complement
-
-# ---------------------------------------------------------------------------
-# Levenshtein distance (for primer alignment)
-# ---------------------------------------------------------------------------
 
 def levenshtein(a: str, b: str) -> int:
     """
@@ -83,13 +22,12 @@ def levenshtein(a: str, b: str) -> int:
         curr = [prev[0] + 1]
         for j, ch_b in enumerate(b):
             curr.append(min(
-                prev[j] + (0 if ch_a == ch_b else 1),   # substitution
-                curr[j] + 1,                              # insertion
-                prev[j + 1] + 1,                          # deletion
+                prev[j] + (0 if ch_a == ch_b else 1),
+                curr[j] + 1,
+                prev[j + 1] + 1,
             ))
         prev = curr
     return prev[len(b)]
-
 
 def align_to_length(seq: str, target_len: int, fill: str = "A") -> str:
     """
@@ -99,11 +37,6 @@ def align_to_length(seq: str, target_len: int, fill: str = "A") -> str:
     if len(seq) >= target_len:
         return seq[:target_len]
     return seq + fill * (target_len - len(seq))
-
-
-# ---------------------------------------------------------------------------
-# Primer-anchored inner region extraction
-# ---------------------------------------------------------------------------
 
 def _find_primer_end(seq: str, primer: str, max_edit: int = 4) -> int:
     """
@@ -121,7 +54,6 @@ def _find_primer_end(seq: str, primer: str, max_edit: int = 4) -> int:
     plen = len(primer)
     best_dist = max_edit + 1
     best_end  = plen
-    # Only search within a small window around the expected primer position
     search_end = min(len(seq), plen + max_edit + 2)
     for start in range(0, search_end - plen + 1):
         candidate = seq[start : start + plen]
@@ -130,7 +62,6 @@ def _find_primer_end(seq: str, primer: str, max_edit: int = 4) -> int:
             best_dist = d
             best_end  = start + plen
     return best_end
-
 
 def _find_primer_start(seq: str, primer_rc: str, max_edit: int = 4) -> int:
     """
@@ -153,21 +84,15 @@ def _find_primer_start(seq: str, primer_rc: str, max_edit: int = 4) -> int:
             best_start = start
     return best_start
 
-
-# ---------------------------------------------------------------------------
-# Decode report
-# ---------------------------------------------------------------------------
-
 @dataclass
 class OligoParseResult:
     """Result of parsing and aligning a single received oligo."""
-    raw_index: int             # index field value (possibly corrupted)
-    trusted_index: bool        # True if index edit distance from expected is low
-    payload: str               # extracted and length-normalised payload
-    start_base: str            # from flags field
-    edit_to_fwd_primer: int    # edit distance of observed vs expected fwd primer
-    indel_detected: bool       # payload length differs from expected
-
+    raw_index: int
+    trusted_index: bool
+    payload: str
+    start_base: str
+    edit_to_fwd_primer: int
+    indel_detected: bool
 
 @dataclass
 class DecodeReport:
@@ -194,11 +119,6 @@ class DecodeReport:
             f"rs_fixed={self.n_rs_corrected} "
             f"col_rec={self.n_column_recovered}"
         )
-
-
-# ---------------------------------------------------------------------------
-# Main decoder
-# ---------------------------------------------------------------------------
 
 class DNADecoder:
     """
@@ -230,10 +150,6 @@ class DNADecoder:
         self.rs_codec        = rs_codec
         self.max_primer_edit = max_primer_edit
 
-    # ------------------------------------------------------------------
-    # Public entry points
-    # ------------------------------------------------------------------
-
     def decode(self, oligos: list[Oligo]) -> tuple[bytes, DecodeReport]:
         """
         Full decoding pipeline: oligos → original bytes.
@@ -256,14 +172,11 @@ class DNADecoder:
             "errors": [],
         }
 
-        # Step 1: Parse and align each oligo
         parsed = self._parse_all(oligos, report_data)
 
-        # Step 2: Group by trusted index; build vote matrix
         grouped = self._group_by_index(parsed)
         report_data["n_unique_indices"] = len(grouped)
 
-        # Step 3: RS Level-2 column parity recovery (if available + needed)
         n_col_rec = 0
         if self.rs_codec is not None:
             grouped, n_col_rec = self._apply_column_recovery(
@@ -271,20 +184,16 @@ class DNADecoder:
             )
         report_data["n_column_recovered"] = n_col_rec
 
-        # Determine expected number of oligos
         n_expected = max(grouped.keys()) + 1 if grouped else 0
         report_data["n_missing_indices"] = max(
             0, n_expected - len(grouped)
         )
 
-        # Step 4: RS Level-1 decode (per-oligo)
         if self.rs_codec is not None:
             grouped = self._apply_rs_decode(grouped, report_data)
 
-        # Step 5: Consensus assembly of master sequence
         master_seq, start_bases = self._assemble_with_consensus(grouped, n_expected)
 
-        # Step 6: Rotation decode + SHA-256 verify
         try:
             data = self.encoder.decode_sequence(master_seq, start_bases)
             sha256_ok = True
@@ -312,10 +221,6 @@ class DNADecoder:
         oligos = self.pool.read_fasta(path)
         return self.decode(oligos)
 
-    # ------------------------------------------------------------------
-    # Step 1: Parse individual oligos
-    # ------------------------------------------------------------------
-
     def _parse_oligo(self, oligo: Oligo) -> Optional[OligoParseResult]:
         """
         Extract index, start_base and payload from one noisy oligo.
@@ -328,7 +233,6 @@ class DNADecoder:
         i   = self.pool.index_len
         f   = self.pool.FLAGS_LEN
 
-        # --- Approximate primer alignment ---
         fwd_end   = _find_primer_end(seq, self.pool.primer_fwd, self.max_primer_edit)
         rev_start = _find_primer_start(seq, self.pool.primer_rev_rc, self.max_primer_edit)
 
@@ -336,22 +240,18 @@ class DNADecoder:
 
         inner = seq[fwd_end:rev_start] if rev_start > fwd_end else ""
 
-        # --- Index field ---
         try:
             raw_index = _bases_to_int(inner[:i]) if len(inner) >= i else oligo.index
         except Exception:
             raw_index = oligo.index
 
-        # Trust the index if it's close to an integer value (< 2 edit dist)
         expected_index_seq = self._int_to_bases_safe(raw_index, i)
         idx_edit = levenshtein(inner[:i], expected_index_seq) if len(inner) >= i else i
         trusted = idx_edit <= 1
 
-        # --- Flags → start_base ---
         flags_raw  = inner[i:i+f] if len(inner) >= i + f else ""
         start_base = _FLAG_DEC.get(flags_raw, oligo.start_base)
 
-        # --- Payload ---
         payload_raw = inner[i+f:] if len(inner) > i + f else ""
         expected_pl = self.pool.payload_len
 
@@ -382,10 +282,6 @@ class DNADecoder:
                 results.append(parsed)
         return results
 
-    # ------------------------------------------------------------------
-    # Step 2: Group by index
-    # ------------------------------------------------------------------
-
     def _group_by_index(
         self,
         parsed: list[OligoParseResult],
@@ -403,10 +299,6 @@ class DNADecoder:
             groups.setdefault(idx, []).append(p)
         return groups
 
-    # ------------------------------------------------------------------
-    # Step 3: Column parity recovery
-    # ------------------------------------------------------------------
-
     def _apply_column_recovery(
         self,
         original_oligos: list[Oligo],
@@ -422,16 +314,11 @@ class DNADecoder:
         if not original_oligos:
             return grouped, 0
 
-        # Determine how many data oligos we expect (vs parity oligos)
         all_indices  = sorted(o.index for o in original_oligos)
         if not all_indices:
             return grouped, 0
 
-        # Parity oligos have higher indices than data oligos.
-        # Heuristic: if pool max_index >> max present data index, trim.
         max_present = max(all_indices)
-        # Count oligos with index within plausible data range
-        # (no parity detection needed if no RS codec is present)
         n_data = max(grouped.keys()) + 1 if grouped else 0
 
         parity_oligos = [o for o in original_oligos if o.index >= n_data]
@@ -449,7 +336,6 @@ class DNADecoder:
         if n_rec == 0:
             return grouped, 0
 
-        # Inject recovered oligos into grouped
         for oligo in recovered_pool:
             if oligo.index not in grouped:
                 parsed = OligoParseResult(
@@ -463,10 +349,6 @@ class DNADecoder:
                 grouped[oligo.index] = [parsed]
 
         return grouped, n_rec
-
-    # ------------------------------------------------------------------
-    # Step 4: RS Level-1 decode
-    # ------------------------------------------------------------------
 
     def _apply_rs_decode(
         self,
@@ -484,7 +366,6 @@ class DNADecoder:
 
         new_grouped: dict[int, list[OligoParseResult]] = {}
         for idx, group in grouped.items():
-            # Consensus payload for this index
             consensus = self._base_consensus(group)
 
             encoded_bytes = _dna_to_bytes(consensus)
@@ -494,7 +375,6 @@ class DNADecoder:
                 )
                 report_data["n_rs_corrected"] += n_err
                 decoded_payload = _bytes_to_dna(decoded_bytes)
-                # Build a single synthetic parsed result with the RS-decoded payload
                 rep = OligoParseResult(
                     raw_index=idx,
                     trusted_index=True,
@@ -507,13 +387,9 @@ class DNADecoder:
             except Exception as e:
                 report_data["n_rs_failed"] += 1
                 report_data["errors"].append(f"RS decode fail @{idx}: {e}")
-                new_grouped[idx] = group   # keep uncorrected
+                new_grouped[idx] = group
 
         return new_grouped
-
-    # ------------------------------------------------------------------
-    # Step 5: Consensus assembly
-    # ------------------------------------------------------------------
 
     def _base_consensus(self, group: list[OligoParseResult]) -> str:
         """
@@ -561,13 +437,12 @@ class DNADecoder:
         max_idx = max(grouped.keys())
         total_len = stride * max_idx + pl
 
-        # Vote matrix over master positions
         votes: list[dict[str, int]] = [{} for _ in range(total_len)]
 
         for idx, group in grouped.items():
             pos_start = idx * stride
             consensus = self._base_consensus(group)
-            n_copies  = len(group)   # weight by copy count
+            n_copies  = len(group)
 
             for offset, base in enumerate(consensus):
                 pos = pos_start + offset
@@ -579,8 +454,6 @@ class DNADecoder:
             for v in votes
         )
 
-        # Recover start_bases: one per encoder block
-        # Encoder blocks are self.encoder.block_size bases wide.
         block_size  = self.encoder.block_size
         n_blocks    = math.ceil(len(master_seq) / block_size)
         start_bases: list[str] = ["A"] * n_blocks
@@ -590,16 +463,11 @@ class DNADecoder:
                 continue
             sb        = group[0].start_base
             pos_start = idx * stride
-            # Which encoder block does the start of this payload fall in?
             block_idx = pos_start // block_size
             if 0 <= block_idx < n_blocks:
                 start_bases[block_idx] = sb
 
         return master_seq, start_bases
-
-    # ------------------------------------------------------------------
-    # Utility
-    # ------------------------------------------------------------------
 
     @staticmethod
     def _int_to_bases_safe(value: int, width: int) -> str:
