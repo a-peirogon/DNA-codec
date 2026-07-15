@@ -1,32 +1,3 @@
-"""
-tests/test_stage3.py — Test suite for reed_solomon.py and channel/simulator.py.
-
-Run with:
-    cd dna_codec && python -m pytest tests/test_stage3.py -v
-
-Coverage
---------
-  RS per-oligo:
-    - encode/decode round-trip (clean)
-    - decode with injected byte errors (≤ capacity)
-    - decode with erasures
-    - decode failure on too many errors
-  RS pool:
-    - encode_pool / decode_pool round-trip
-    - decode_pool with simulated errors
-  RS 2D column parity:
-    - add_column_parity adds correct number of extra oligos
-    - recover_with_column_parity recovers dropped data oligos
-  Channel simulator:
-    - substitution rate matches configured rate
-    - insertion / deletion rates
-    - dropout reduces pool size
-    - reordering changes order but not content
-    - stats: SNR, error_rate, summary
-  Integration:
-    - full encode → fragment → RS encode → channel → RS decode → assemble → decode
-"""
-
 from __future__ import annotations
 
 import os
@@ -44,25 +15,17 @@ from dna_codec.codec.ecc.reed_solomon import (
 )
 from dna_codec.channel.simulator import ChannelSimulator, ChannelStats
 
-
-# ===========================================================================
-# Fixtures
-# ===========================================================================
-
 @pytest.fixture
 def encoder() -> DNAEncoder:
     return DNAEncoder(block_size=200)
-
 
 @pytest.fixture
 def pool() -> OligoPool:
     return OligoPool(oligo_len=150, overlap=20, primer_len=20, index_len=8)
 
-
 @pytest.fixture
 def rs() -> RSCodec:
     return RSCodec(redundancy=0.30, col_redundancy=0.20)
-
 
 @pytest.fixture
 def sim() -> ChannelSimulator:
@@ -71,7 +34,6 @@ def sim() -> ChannelSimulator:
         dropout_rate=0.05, seed=42,
     )
 
-
 def make_oligos(n_bytes: int = 300):
     enc  = DNAEncoder(block_size=200)
     pool = OligoPool(oligo_len=150, overlap=20, primer_len=20, index_len=8)
@@ -79,11 +41,6 @@ def make_oligos(n_bytes: int = 300):
     master = enc.encode_bytes(data)
     oligos = pool.fragment(master, enc.start_bases)
     return oligos, enc, pool, data
-
-
-# ===========================================================================
-# 1. DNA ↔ bytes helpers
-# ===========================================================================
 
 class TestDNABytesHelpers:
     def test_bytes_to_dna_zero(self):
@@ -102,14 +59,8 @@ class TestDNABytesHelpers:
         assert _dna_to_bytes(_bytes_to_dna(data)) == data
 
     def test_dna_to_bytes_truncates_partial(self):
-        # 5 bases → only 1 full byte (4 bases used)
         result = _dna_to_bytes("ACGTA")
         assert len(result) == 1
-
-
-# ===========================================================================
-# 2. RSCodec — per-oligo level
-# ===========================================================================
 
 class TestRSPerOligo:
     def test_encode_increases_length(self, rs: RSCodec):
@@ -129,7 +80,6 @@ class TestRSPerOligo:
     def test_corrects_single_error(self, rs: RSCodec):
         payload = os.urandom(25)
         encoded = bytearray(rs.encode_oligo(payload))
-        # Corrupt one byte
         encoded[5] ^= 0x55
         recovered, n_err = rs.decode_oligo(bytes(encoded), len(payload))
         assert recovered == payload
@@ -139,9 +89,8 @@ class TestRSPerOligo:
         payload = os.urandom(25)
         encoded = bytearray(rs.encode_oligo(payload))
         nsym    = rs.nsym_for(len(payload))
-        capacity = nsym // 2   # RS corrects t = nsym/2 errors
+        capacity = nsym // 2
 
-        # Corrupt exactly capacity bytes at distinct positions
         positions = random.sample(range(len(encoded)), capacity)
         for pos in positions:
             encoded[pos] ^= 0xFF
@@ -154,7 +103,6 @@ class TestRSPerOligo:
         payload = os.urandom(25)
         encoded = bytearray(rs.encode_oligo(payload))
         nsym    = rs.nsym_for(len(payload))
-        # Corrupt nsym + 1 bytes (guaranteed uncorrectable)
         positions = list(range(nsym + 1))
         for pos in positions:
             if pos < len(encoded):
@@ -167,7 +115,6 @@ class TestRSPerOligo:
         payload = os.urandom(25)
         encoded = bytearray(rs.encode_oligo(payload))
         nsym    = rs.nsym_for(len(payload))
-        # Erase nsym positions (all parity bytes)
         erasure_positions = list(range(len(payload), len(encoded)))
         for pos in erasure_positions:
             encoded[pos] = 0
@@ -176,17 +123,11 @@ class TestRSPerOligo:
         )
         assert recovered == payload
 
-
-# ===========================================================================
-# 3. RSCodec — pool level (encode_pool / decode_pool)
-# ===========================================================================
-
 class TestRSPool:
     def test_encode_pool_extends_payload(self, rs: RSCodec):
         oligos, enc, pool, data = make_oligos(200)
         original_payload_len = len(oligos[0].payload)
         encoded = rs.encode_pool(oligos)
-        # Each payload should be longer by nsym * 4 bases (nsym bytes → 4 bases each)
         nsym = rs.nsym_for(original_payload_len // 4)
         expected = original_payload_len + nsym * 4
         for o in encoded:
@@ -201,7 +142,6 @@ class TestRSPool:
 
         assert report.decoded_ok == len(oligos)
         assert report.failed == 0
-        # Payload should be restored to original length
         for orig, dec in zip(oligos, decoded):
             assert dec.payload == orig.payload
 
@@ -211,7 +151,6 @@ class TestRSPool:
         original_pl = len(oligos[0].payload)
         encoded = rs.encode_pool(oligos)
 
-        # Inject 1 base error (4 bits = less than 1 byte) into first 3 oligos
         import random as rnd
         rnd.seed(7)
         corrupted = list(encoded)
@@ -239,11 +178,6 @@ class TestRSPool:
         assert 0.0 <= report.success_rate <= 1.0
         assert len(report.oligo_results) == len(oligos)
 
-
-# ===========================================================================
-# 4. RSCodec — 2D column parity
-# ===========================================================================
-
 class TestRSColumnParity:
     def test_column_parity_adds_oligos(self, rs: RSCodec, pool: OligoPool):
         oligos, enc, pl, data = make_oligos(300)
@@ -256,8 +190,6 @@ class TestRSColumnParity:
         extended = rs.add_column_parity(oligos, pool)
         expected_len = pool.oligo_len
         for o in extended:
-            # Parity oligos may have different payload length than data oligos
-            # but full_seq should be within ± a few bases (rounding)
             assert abs(len(o.full_seq) - expected_len) <= 8, (
                 f"Oligo {o.index} full_seq len={len(o.full_seq)}"
             )
@@ -268,7 +200,6 @@ class TestRSColumnParity:
         n_data = len(oligos)
         extended = rs.add_column_parity(oligos, pool)
 
-        # Drop oligo at index 2
         without_oligo2 = [o for o in extended if o.index != 2]
 
         recovered, n_rec = rs.recover_with_column_parity(
@@ -277,7 +208,6 @@ class TestRSColumnParity:
         assert n_rec >= 1
         assert len(recovered) == n_data
 
-        # Find the recovered oligo
         by_idx = {o.index: o for o in recovered}
         assert 2 in by_idx
         assert by_idx[2].payload == oligos[2].payload
@@ -289,7 +219,6 @@ class TestRSColumnParity:
         extended = rs.add_column_parity(oligos, pool)
         nsym = max(2, round(n_data * rs.col_redundancy))
 
-        # Drop nsym - 1 oligos (within capacity)
         drop_count = max(1, nsym - 1)
         drop_indices = sorted(random.sample(range(n_data), drop_count))
         surviving = [o for o in extended if o.index not in drop_indices]
@@ -302,11 +231,6 @@ class TestRSColumnParity:
         for di in drop_indices:
             assert di in by_idx
             assert by_idx[di].payload == oligos[di].payload
-
-
-# ===========================================================================
-# 5. Channel simulator
-# ===========================================================================
 
 class TestChannelSimulator:
     def test_clean_channel_no_errors(self):
@@ -324,7 +248,7 @@ class TestChannelSimulator:
         target = 0.05
         sim = ChannelSimulator(sub_rate=target, ins_rate=0, del_rate=0,
                                dropout_rate=0, seed=99)
-        seq = "ACGT" * 2500   # 10 000 bases
+        seq = "ACGT" * 2500
         _, stats = sim.corrupt_sequence(seq)
         observed = stats.n_substitutions / len(seq)
         assert abs(observed - target) < 0.02, (
@@ -366,7 +290,6 @@ class TestChannelSimulator:
         original_indices = [o.index for o in oligos]
         noisy_indices    = [o.index for o in noisy]
         assert set(noisy_indices) == set(original_indices)
-        # With a large pool, shuffle should change order
         assert noisy_indices != original_indices
 
     def test_no_reorder(self):
@@ -397,7 +320,6 @@ class TestChannelSimulator:
                                dropout_rate=0.2, seed=12)
         oligos, *_ = make_oligos(300)
         noisy, stats = sim.simulate_dropout_only(oligos)
-        # No base errors, only dropout
         assert stats.total_substitutions == 0
         assert stats.total_insertions == 0
         assert stats.total_deletions == 0
@@ -411,11 +333,6 @@ class TestChannelSimulator:
         n2, s2 = sim2.simulate(oligos, reorder=True)
         assert [o.index for o in n1] == [o.index for o in n2]
         assert s1.n_dropped == s2.n_dropped
-
-
-# ===========================================================================
-# 6. Integration: full pipeline with RS + channel
-# ===========================================================================
 
 class TestIntegrationRS:
     def test_rs_protects_against_substitutions(self):
@@ -432,23 +349,18 @@ class TestIntegrationRS:
         oligos = pl.fragment(master, enc.start_bases)
         orig_pl_len = len(oligos[0].payload)
 
-        # RS encode
         encoded_oligos = rs.encode_pool(oligos)
 
-        # Channel: substitution only, low rate (RS can handle it)
         sim   = ChannelSimulator(sub_rate=0.005, ins_rate=0, del_rate=0,
                                  dropout_rate=0, seed=77)
         noisy, chan_stats = sim.simulate(encoded_oligos, reorder=True)
 
-        assert chan_stats.total_substitutions > 0   # errors actually occurred
+        assert chan_stats.total_substitutions > 0
 
-        # RS decode
         decoded_oligos, report = rs.decode_pool(noisy, orig_pl_len)
         assert report.decoded_ok == len(oligos)
         assert report.failed == 0
 
-        # Reassemble and verify
-        # Sort by index (simulator reordered)
         decoded_oligos.sort(key=lambda o: o.index)
         rebuilt_master, _ = pl.assemble(decoded_oligos)
         recovered = enc.decode_sequence(rebuilt_master[:len(master)], enc.start_bases)
@@ -468,14 +380,11 @@ class TestIntegrationRS:
         oligos = pl.fragment(master, enc.start_bases)
         n_data = len(oligos)
 
-        # Add column parity
         extended = rs.add_column_parity(oligos, pl)
 
-        # Drop 2 data oligos
         drop_idx = [1, 3]
         surviving = [o for o in extended if o.index not in drop_idx]
 
-        # Recover with column parity
         recovered_pool, n_rec = rs.recover_with_column_parity(
             surviving, n_data, pl
         )
@@ -508,44 +417,32 @@ class TestIntegrationRS:
         n_data = len(oligos)
         orig_pl_len = len(oligos[0].payload)
 
-        # RS encode Level 1
         encoded = rs.encode_pool(oligos)
 
-        # Add column parity Level 2
         extended = rs.add_column_parity(encoded, pl)
 
-        # Channel: dropout + reorder only (substitutions tested separately)
         sim   = ChannelSimulator(sub_rate=0.0, ins_rate=0.0, del_rate=0.0,
                                  dropout_rate=0.10, seed=2024)
         noisy, chan_stats = sim.simulate(extended, reorder=True)
-        assert chan_stats.n_dropped > 0              # dropout occurred
+        assert chan_stats.n_dropped > 0
         assert chan_stats.n_oligos_out < chan_stats.n_oligos_in
 
-        # Sort by index
         noisy.sort(key=lambda o: o.index)
         data_noisy   = [o for o in noisy if o.index < n_data]
         parity_noisy = [o for o in noisy if o.index >= n_data]
 
-        # Level 2: recover dropped data oligos using column parity
         recovered_data, n_rec = rs.recover_with_column_parity(
             data_noisy + parity_noisy, n_data, pl
         )
         assert len(recovered_data) == n_data
 
-        # Level 1 decode
         decoded, report = rs.decode_pool(recovered_data, orig_pl_len)
         assert report.decoded_ok == n_data
 
-        # Assemble and verify full round-trip
         decoded.sort(key=lambda o: o.index)
         rebuilt, _ = pl.assemble(decoded)
         final = enc.decode_sequence(rebuilt[:len(master)], enc.start_bases)
         assert final == data
-
-
-# ===========================================================================
-# 7. Regression: column-parity bugs found while wiring up image payloads
-# ===========================================================================
 
 class TestColumnParityRegressions:
     """
@@ -574,7 +471,6 @@ class TestColumnParityRegressions:
         pl = OligoPool(oligo_len=150, overlap=20, primer_len=20, index_len=8)
         rs = RSCodec(redundancy=0.30, col_redundancy=0.20)
 
-        # Large enough payload to produce > 255 data oligos.
         data = os.urandom(15000)
         master = enc.encode_bytes(data)
         oligos = pl.fragment(master, enc.start_bases)
@@ -582,11 +478,9 @@ class TestColumnParityRegressions:
         assert n_data > 255, "test setup should exceed the GF(2^8) limit"
 
         encoded = rs.encode_pool(oligos)
-        extended = rs.add_column_parity(encoded, pl)   # must not raise
+        extended = rs.add_column_parity(encoded, pl)
         assert len(extended) > len(encoded)
 
-        # Clean round trip through the extended pool (no drops) must
-        # still recover the original data exactly.
         decoded, report = rs.decode_pool(
             [o for o in extended if o.index < n_data],
             original_payload_bases=len(oligos[0].payload),
@@ -615,10 +509,8 @@ class TestColumnParityRegressions:
         n_parity = len(extended) - n_data
         assert n_parity >= 2, "need at least 2 parity oligos for this test"
 
-        # Drop 1 data oligo and 1 parity oligo (2 total erasures,
-        # guaranteed <= nsym since nsym == n_parity >= 2).
         dropped_data_idx = 1
-        dropped_parity_idx = n_data  # first parity oligo
+        dropped_parity_idx = n_data
         surviving = [
             o for o in extended
             if o.index != dropped_data_idx and o.index != dropped_parity_idx
