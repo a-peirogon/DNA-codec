@@ -1,44 +1,3 @@
-"""
-ecc/reed_solomon.py — Reed-Solomon error correction for DNA Data Storage.
-
-Two levels of protection (RAID-like, "2D RS"):
-
-  Level 1 — Per-oligo RS (horizontal):
-    Each oligo's payload bytes are protected by `nsym` parity bytes appended
-    to the payload.  Corrects up to nsym/2 byte errors per oligo.
-
-  Level 2 — Cross-oligo RS (vertical / "interleaved"):
-    For each byte column j across all N oligos, the N values at position j
-    form a codeword protected by `nsym_col` parity symbols.  The parity
-    codewords are stored as additional "parity oligos" at the end of the pool.
-    This recovers entire lost (dropout) oligos — analogous to RAID-6.
-
-Mathematical background
------------------------
-  Reed-Solomon codes operate over GF(2^8) (Galois Field with 256 elements).
-  A (n, k) RS code takes k data symbols and produces n−k parity symbols such
-  that any n−k erasures or n−k/2 errors can be corrected.
-
-  We use the `reedsolo` library (pure Python, no C extension required) which
-  implements RS over GF(2^8) with generator polynomial primitive x^8+x^4+x^3+x^2+1
-  (0x11d), consistent with QR Code and many storage standards.
-
-  Ref: Reed, I.S. & Solomon, G. (1960). Polynomial codes over certain finite
-    fields. SIAM Journal on Applied Mathematics, 8(2), 300–304.
-  Ref: Wicker, S.B. & Bhargava, V.K. (1994). Reed-Solomon Codes and Their
-    Applications. IEEE Press.
-
-Public API
-----------
-  RSCodec(redundancy=0.30)        — construct codec
-  codec.encode_oligo(payload_bytes)   → encoded_bytes (payload + parity)
-  codec.decode_oligo(encoded_bytes)   → (payload_bytes, n_errors_corrected)
-  codec.encode_pool(oligos)           → list[Oligo]  (payloads RS-encoded)
-  codec.decode_pool(oligos)           → (list[Oligo], PoolDecodeReport)
-  codec.add_column_parity(oligos)     → list[Oligo]  (pool + parity oligos)
-  codec.recover_with_column_parity(oligos) → list[Oligo]
-"""
-
 from __future__ import annotations
 
 import math
@@ -49,17 +8,10 @@ import reedsolo
 
 from dna_codec.codec.oligos import Oligo, OligoPool, _FLAG_ENC, _int_to_bases
 
-# ---------------------------------------------------------------------------
-# Constants
-# ---------------------------------------------------------------------------
-GF_EXP   = 8           # GF(2^8)
-GF_PRIM  = 0x11d       # primitive polynomial x^8+x^4+x^3+x^2+1
-FCRS     = 1           # first consecutive root of generator polynomial
+GF_EXP   = 8
+GF_PRIM  = 0x11d
+FCRS     = 1
 
-
-# ---------------------------------------------------------------------------
-# Report dataclass
-# ---------------------------------------------------------------------------
 @dataclass
 class OligoDecodeResult:
     """Result of decoding a single oligo."""
@@ -67,7 +19,6 @@ class OligoDecodeResult:
     success: bool
     n_errors: int = 0
     error_message: str = ""
-
 
 @dataclass
 class PoolDecodeReport:
@@ -94,10 +45,6 @@ class PoolDecodeReport:
                if self.column_parity_used else "")
         )
 
-
-# ---------------------------------------------------------------------------
-# Core RS codec
-# ---------------------------------------------------------------------------
 class RSCodec:
     """
     Two-level Reed-Solomon codec for an oligo pool.
@@ -120,17 +67,11 @@ class RSCodec:
     ) -> None:
         self.redundancy = redundancy
         self.col_redundancy = col_redundancy
-        # RSCodec is stateless w.r.t. payload length; nsym is set per-call
-        # because payload lengths can vary (last oligo may differ).
 
     def _make_rs(self, nsym: int) -> reedsolo.RSCodec:
         """Create a reedsolo.RSCodec instance for *nsym* parity symbols.
         prim=285 (0x11d) is the default GF(2^8) primitive polynomial."""
         return reedsolo.RSCodec(nsym, fcr=FCRS, prim=GF_PRIM)
-
-    # ------------------------------------------------------------------
-    # Level 1: per-oligo
-    # ------------------------------------------------------------------
 
     def nsym_for(self, payload_len: int) -> int:
         """Number of parity bytes for a payload of *payload_len* bytes."""
@@ -182,10 +123,6 @@ class RSCodec:
         )
         n_errors = len(errata) if errata else 0
         return bytes(decoded), n_errors
-
-    # ------------------------------------------------------------------
-    # Level 1: pool encode/decode
-    # ------------------------------------------------------------------
 
     def encode_pool(self, oligos: list[Oligo]) -> list[Oligo]:
         """
@@ -243,7 +180,6 @@ class RSCodec:
                     index=oligo.index, success=True, n_errors=n_err
                 ))
             except Exception as e:
-                # Uncorrectable — keep original but mark as failed
                 decoded.append(oligo)
                 results.append(OligoDecodeResult(
                     index=oligo.index, success=False, error_message=str(e)
@@ -260,10 +196,6 @@ class RSCodec:
             oligo_results=results,
         )
         return decoded, report
-
-    # ------------------------------------------------------------------
-    # Level 2: column (cross-oligo) parity
-    # ------------------------------------------------------------------
 
     def add_column_parity(
         self,
@@ -286,28 +218,11 @@ class RSCodec:
         if not oligos:
             return []
 
-        # Ensure all payload DNA strings are the same length (pad if needed)
         payload_len = max(len(o.payload) for o in oligos)
-        cols        = payload_len // 4  # bytes per oligo
+        cols        = payload_len // 4
 
         N = len(oligos)
 
-        # GF(2^8) codewords are limited to 255 symbols total (data + parity).
-        # A single RS codeword spanning all N data oligos is only valid
-        # while N + nsym <= 255; beyond that reedsolo silently produces a
-        # truncated/corrupt result (or raises once nsym >= nsize), which
-        # is what was causing the IndexError with 625+ oligos. Note nsym
-        # itself is a fraction of the group size (col_redundancy), so for
-        # large N, a *global* nsym = round(N*col_redundancy) can already
-        # exceed 255 on its own, before grouping is even applied — so
-        # group_size and nsym must be solved for together, not nsym first.
-        #
-        # Find the largest group_size g such that
-        #   g + round(g * col_redundancy) <= 255
-        # This keeps every group's codeword (data + its own parity) within
-        # the GF(2^8) symbol limit. Each group gets independent column
-        # parity, analogous to RAID-6 across striped groups rather than
-        # one giant stripe.
         group_size = 1
         for candidate in range(1, 256):
             g_nsym = max(2, round(candidate * self.col_redundancy))
@@ -320,7 +235,7 @@ class RSCodec:
         n_groups = math.ceil(N / group_size) if group_size else 0
 
         parity_oligos: list[Oligo] = []
-        base_idx = len(oligos)  # parity oligos start after all data oligos
+        base_idx = len(oligos)
         ref_oligo = oligos[0]
         parity_slot = 0
 
@@ -330,7 +245,6 @@ class RSCodec:
             group_oligos = oligos[g_start:g_end]
             g_N = len(group_oligos)
 
-            # Build matrix for this group: g_N rows × cols columns (bytes)
             matrix: list[bytes] = [
                 _dna_to_bytes(o.payload.ljust(payload_len, "A"))
                 for o in group_oligos
@@ -344,16 +258,10 @@ class RSCodec:
                     row[j] if j < len(row) else 0 for row in matrix
                 )
                 col_encoded = rs.encode(col_data)
-                parity_syms = col_encoded[g_N:]     # last nsym symbols
+                parity_syms = col_encoded[g_N:]
                 for k, sym in enumerate(parity_syms):
                     col_parities[k].append(sym)
 
-            # Each of the nsym parity rows for this group becomes a new
-            # "parity oligo". Slot indices are allocated sequentially
-            # across all groups so recover_with_column_parity can tell
-            # which group and which parity slot within it each parity
-            # oligo belongs to (group = slot // nsym, slot_in_group =
-            # slot % nsym).
             for k, parity_row in enumerate(col_parities):
                 parity_bytes = bytes(parity_row[:cols])
                 parity_payload = _bytes_to_dna(parity_bytes)
@@ -394,7 +302,6 @@ class RSCodec:
             recovered_oligos contains only the n_data_oligos data oligos,
             with lost ones filled in via RS column decoding.
         """
-        # Separate data and parity oligos
         by_index   = {o.index: o for o in oligos}
         data_oligos = [by_index.get(i) for i in range(n_data_oligos)]
         parity_oligos = [
@@ -403,7 +310,6 @@ class RSCodec:
         parity_oligos.sort(key=lambda o: o.index)
 
         if not parity_oligos:
-            # No parity oligos available — return as-is
             return [o for o in data_oligos if o is not None], 0
 
         payload_len = max(
@@ -413,13 +319,6 @@ class RSCodec:
 
         N = n_data_oligos
 
-        # add_column_parity solves for the largest group_size g such that
-        # g + round(g * col_redundancy) <= 255, then uses
-        # nsym = round(group_size * col_redundancy) per group, and
-        # allocates parity-oligo indices sequentially across groups:
-        # group = slot // nsym, slot_in_group = slot % nsym. Recompute
-        # the identical grouping here so recovery lines up with how
-        # encoding actually split the pool.
         group_size = 1
         for candidate in range(1, 256):
             g_nsym = max(2, round(candidate * self.col_redundancy))
@@ -431,10 +330,6 @@ class RSCodec:
         nsym = max(2, round(group_size * self.col_redundancy)) if group_size else 0
         n_groups = math.ceil(N / group_size) if group_size else 0
 
-        # Total parity oligos actually created = n_groups * nsym. If the
-        # highest surviving parity index implies more groups than our
-        # local computation (e.g. redundancy settings drifted), trust
-        # the larger of the two so we don't under-allocate nsym slots.
         parity_by_global_slot = {o.index - n_data_oligos: o for o in parity_oligos}
         max_slot_seen = max(parity_by_global_slot.keys(), default=-1)
         n_groups = max(n_groups, (max_slot_seen // nsym) + 1 if nsym else 0)
@@ -450,8 +345,6 @@ class RSCodec:
             group_indices = list(range(g_start, g_end))
             g_N = len(group_indices)
 
-            # Parity oligos belonging to this group, keyed by their
-            # slot-within-group (0 .. nsym-1).
             group_parity_by_slot = {
                 slot - g * nsym: o
                 for slot, o in parity_by_global_slot.items()
@@ -461,8 +354,6 @@ class RSCodec:
                 k for k in range(nsym) if k not in group_parity_by_slot
             ]
 
-            # Data erasures within this group, as indices into the
-            # group's own data portion (0 .. g_N-1).
             data_erasure_positions = [
                 i - g_start
                 for i in group_indices
@@ -474,16 +365,11 @@ class RSCodec:
             if not data_erasure_positions or ref is None:
                 continue
 
-            # reedsolo's erase_pos is relative to the FULL codeword (data
-            # symbols first, then parity symbols), so parity erasures
-            # must be offset by g_N, not left at their bare slot index.
             codeword_erasure_positions = sorted(
                 data_erasure_positions + [g_N + k for k in missing_parity_slots]
             )
 
             if len(codeword_erasure_positions) > nsym:
-                # Uncorrectable within this group — leave as None, will
-                # be filled with a dummy payload below.
                 continue
 
             rs = self._make_rs(nsym)
@@ -492,8 +378,6 @@ class RSCodec:
             }
 
             for j in range(cols):
-                # Build received codeword: data + parity, in original
-                # group-relative order.
                 received = []
                 for gi, i in enumerate(group_indices):
                     if data_oligos[i] is not None:
@@ -502,12 +386,8 @@ class RSCodec:
                         )
                         received.append(row_bytes[j] if j < len(row_bytes) else 0)
                     else:
-                        received.append(0)   # placeholder for erasure
+                        received.append(0)
 
-                # Parity segment must preserve original slot order
-                # (slot k == the k-th parity symbol generated for this
-                # column at encode time), with 0 placeholders for any
-                # parity oligo that was itself lost.
                 for k in range(nsym):
                     p_oligo = group_parity_by_slot.get(k)
                     if p_oligo is not None:
@@ -516,7 +396,7 @@ class RSCodec:
                         )
                         received.append(p_bytes[j] if j < len(p_bytes) else 0)
                     else:
-                        received.append(0)   # placeholder for erasure
+                        received.append(0)
 
                 try:
                     decoded_col, _, _ = rs.decode(
@@ -531,8 +411,6 @@ class RSCodec:
                     for ep in data_erasure_positions:
                         recovered_cols[ep].append(0)
 
-            # Rebuild recovered oligos (translate group-relative index
-            # back to the global data-oligo index).
             for ep in data_erasure_positions:
                 global_ep = g_start + ep
                 rec_bytes   = bytes(recovered_cols[ep])
@@ -543,7 +421,6 @@ class RSCodec:
                 data_oligos[global_ep] = rec_oligo
                 n_recovered += 1
 
-        # Fill any still-None slots with a zero-payload oligo
         ref = next((o for o in data_oligos if o is not None), None)
         final = []
         for i, o in enumerate(data_oligos):
@@ -555,14 +432,8 @@ class RSCodec:
 
         return final, n_recovered
 
-
-# ---------------------------------------------------------------------------
-# Helpers: DNA ↔ bytes (raw 2-bit mapping, no rotation — RS operates on bytes)
-# ---------------------------------------------------------------------------
-
-_B2D = ["A", "C", "G", "T"]   # 0→A, 1→C, 2→G, 3→T
+_B2D = ["A", "C", "G", "T"]
 _D2B = {b: i for i, b in enumerate(_B2D)}
-
 
 def _bytes_to_dna(data: bytes) -> str:
     """Convert raw bytes to a DNA string (4 bases per byte, MSB-first)."""
@@ -574,11 +445,10 @@ def _bytes_to_dna(data: bytes) -> str:
         bases.append(_B2D[byte & 3])
     return "".join(bases)
 
-
 def _dna_to_bytes(dna: str) -> bytes:
     """Convert a DNA string (4 bases per byte) to bytes. Truncates trailing bases."""
     dna = dna.upper()
-    n   = (len(dna) // 4) * 4   # round down to multiple of 4
+    n   = (len(dna) // 4) * 4
     result: list[int] = []
     for i in range(0, n, 4):
         byte = (
@@ -590,12 +460,9 @@ def _dna_to_bytes(dna: str) -> bytes:
         result.append(byte)
     return bytes(result)
 
-
 def _replace_payload(oligo: Oligo, new_payload: str) -> Oligo:
     """Return a copy of *oligo* with a different payload (and rebuilt full_seq)."""
     p = len(oligo.primer_fwd)
-    # Rebuild full_seq: primer_fwd + everything_between + primer_rev_rc
-    # Keep index and flags from original full_seq
     header_part = oligo.full_seq[p : len(oligo.full_seq) - p - len(oligo.payload)]
     new_full    = oligo.primer_fwd + header_part + new_payload + oligo.primer_rev_rc
     return Oligo(
@@ -609,7 +476,6 @@ def _replace_payload(oligo: Oligo, new_payload: str) -> Oligo:
         tm_rev=oligo.tm_rev,
         is_padded=oligo.is_padded,
     )
-
 
 def _rebuild_oligo(
     ref: Oligo,
