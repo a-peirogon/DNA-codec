@@ -1,0 +1,48 @@
+<svg width="720" height="220" viewBox="0 0 720 220" xmlns="http://www.w3.org/2000/svg" role="img">
+<title>dna_codec pipeline</title>
+<desc>bytes are encoded into a DNA sequence, fragmented into oligos, protected with Reed-Solomon parity, passed through a simulated channel, then decoded back into bytes and checked against a SHA-256 hash.</desc>
+
+<rect width="720" height="220" fill="#ffffff"/>
+
+<g font-family="Consolas, Menlo, monospace" font-size="12" fill="#111111">
+
+<!-- row 1: forward path -->
+<rect x="20"  y="30" width="110" height="40" fill="none" stroke="#111111"/>
+<rect x="180" y="30" width="110" height="40" fill="none" stroke="#111111"/>
+<rect x="340" y="30" width="110" height="40" fill="none" stroke="#111111"/>
+<rect x="500" y="30" width="180" height="40" fill="none" stroke="#111111"/>
+
+<text x="75"  y="54" text-anchor="middle">bytes</text>
+<text x="235" y="54" text-anchor="middle">encoder</text>
+<text x="395" y="54" text-anchor="middle">oligos</text>
+<text x="590" y="54" text-anchor="middle">reed_solomon</text>
+
+<line x1="130" y1="50" x2="178" y2="50" stroke="#111111"/>
+<polygon points="178,50 170,46 170,54" fill="#111111"/>
+<line x1="290" y1="50" x2="338" y2="50" stroke="#111111"/>
+<polygon points="338,50 330,46 330,54" fill="#111111"/>
+<line x1="450" y1="50" x2="498" y2="50" stroke="#111111"/>
+<polygon points="498,50 490,46 490,54" fill="#111111"/>
+
+<!-- connector down -->
+<line x1="590" y1="70" x2="590" y2="120" stroke="#111111"/>
+<polygon points="590,120 586,112 594,112" fill="#111111"/>
+
+<!-- row 2: channel + return path -->
+<rect x="500" y="120" width="180" height="40" fill="none" stroke="#111111"/>
+<text x="590" y="144" text-anchor="middle">channel</text>
+
+<line x1="500" y1="140" x2="450" y2="140" stroke="#111111"/>
+<polygon points="450,140 458,136 458,144" fill="#111111"/>
+<rect x="340" y="120" width="110" height="40" fill="none" stroke="#111111"/>
+<text x="395" y="144" text-anchor="middle">decoder</text>
+
+<line x1="340" y1="140" x2="130" y2="140" stroke="#111111"/>
+<polygon points="130,140 138,136 138,144" fill="#111111"/>
+<rect x="20" y="120" width="110" height="40" fill="none" stroke="#111111"/>
+<text x="75" y="144" text-anchor="middle">bytes</text>
+
+<text x="75" y="185" text-anchor="middle" fill="#555555">sha256 check</text>
+
+</g>
+</svg>
