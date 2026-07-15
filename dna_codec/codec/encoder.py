@@ -1,39 +1,3 @@
-"""
-encoder.py — Binary file → ACGT DNA sequence encoder.
-
-Encoding pipeline
------------------
-  1. Read the input file as raw bytes.
-  2. Prepend an 8-byte header:
-       [4 bytes: magic 0xDEAD_BEEF] [4 bytes: original file length in bytes]
-  3. Compute SHA-256 digest of the raw bytes; append 32 bytes at the end.
-     This lets the decoder verify integrity after reconstruction.
-  4. Pad the byte stream to an even number of bytes (required for 2-bit mapping).
-  5. Convert every byte to four 2-bit symbols:
-       byte b → [(b>>6)&3, (b>>4)&3, (b>>2)&3, b&3]
-  6. Apply rotation encoding (see constraints.ConstraintEnforcer) to map
-     2-bit symbols → ACGT bases while naturally avoiding homopolymer runs.
-  7. The optimal start_base (one of A/C/G/T) is chosen per-block of 200 nt
-     to keep GC content near 50 %.  The start_base sequence is stored in the
-     header of each oligo (handled by oligos.py).
-
-References
-----------
-  Church, G.M. et al. (2012). Next-generation digital information storage
-    in DNA. Science, 337(6102), 1628–1628.
-  Goldman, N. et al. (2013). Towards practical, high-capacity, low-maintenance
-    information storage in synthesised DNA. Nature, 494(7435), 77–80.
-  Organick, L. et al. (2018). Random access in large-scale DNA data storage.
-    Nature Biotechnology, 36(3), 242–248.
-
-Public API
-----------
-  DNAEncoder(block_size=200)          — construct encoder
-  encoder.encode_file(path) → str     — returns master ACGT sequence
-  encoder.encode_bytes(data) → str    — encode raw bytes
-  DNAEncoder.decode_bytes(seq) → bytes — static, reverses encode_bytes
-"""
-
 from __future__ import annotations
 
 import hashlib
@@ -44,21 +8,13 @@ from typing import Union
 
 from .constraints import ConstraintChecker, ConstraintEnforcer, _BASE_TO_BITS
 
-# ---------------------------------------------------------------------------
-# Constants
-# ---------------------------------------------------------------------------
 MAGIC: bytes = b"\xDE\xAD\xBE\xEF"
-HEADER_FMT: str = ">4sI"          # big-endian: 4-byte magic + 4-byte uint32
-HEADER_SIZE: int = struct.calcsize(HEADER_FMT)   # 8 bytes
-DIGEST_SIZE: int = 32             # SHA-256
+HEADER_FMT: str = ">4sI"
+HEADER_SIZE: int = struct.calcsize(HEADER_FMT)
+DIGEST_SIZE: int = 32
 BITS_PER_BASE: int = 2
 BITS_PER_BYTE: int = 8
-BASES_PER_BYTE: int = BITS_PER_BYTE // BITS_PER_BASE  # 4
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
+BASES_PER_BYTE: int = BITS_PER_BYTE // BITS_PER_BASE
 
 def bytes_to_dibits(data: bytes) -> list[int]:
     """
@@ -74,7 +30,6 @@ def bytes_to_dibits(data: bytes) -> list[int]:
         dibits.append((byte >> 2) & 3)
         dibits.append(byte & 3)
     return dibits
-
 
 def dibits_to_bytes(dibits: list[int]) -> bytes:
     """
@@ -96,11 +51,6 @@ def dibits_to_bytes(dibits: list[int]) -> bytes:
         )
         result.append(byte)
     return bytes(result)
-
-
-# ---------------------------------------------------------------------------
-# Encoder class
-# ---------------------------------------------------------------------------
 
 class DNAEncoder:
     """
@@ -135,12 +85,7 @@ class DNAEncoder:
             max_palindrome=max_palindrome,
         )
         self.enforcer = ConstraintEnforcer(self.checker)
-        # Populated after encode_bytes is called
         self.start_bases: list[str] = []
-
-    # ------------------------------------------------------------------
-    # Public interface
-    # ------------------------------------------------------------------
 
     def encode_file(self, path: Union[str, Path]) -> str:
         """
@@ -168,28 +113,21 @@ class DNAEncoder:
         -------
         str : Master ACGT sequence.
         """
-        # 1. Digest
         digest = hashlib.sha256(data).digest()
         self.sha256 = hashlib.sha256(data).hexdigest()
 
-        # 2. Build payload bytes: header | data | sha256_digest
         header = struct.pack(HEADER_FMT, MAGIC, len(data))
         payload: bytes = header + data + digest
 
-        # 3. Pad payload so that len(payload) * BASES_PER_BYTE is divisible
-        #    by block_size (simplifies block chunking).
         total_bases_needed = len(payload) * BASES_PER_BYTE
         remainder = total_bases_needed % self.block_size
         if remainder != 0:
             pad_bases = self.block_size - remainder
-            # pad_bases must be divisible by BASES_PER_BYTE
             pad_bytes_needed = (pad_bases + BASES_PER_BYTE - 1) // BASES_PER_BYTE
             payload += b"\x00" * pad_bytes_needed
 
-        # 4. Bytes → dibits
         dibits = bytes_to_dibits(payload)
 
-        # 5. Encode in blocks
         self.start_bases = []
         dna_parts: list[str] = []
 
@@ -203,10 +141,6 @@ class DNAEncoder:
 
         master_seq = "".join(dna_parts)
         return master_seq
-
-    # ------------------------------------------------------------------
-    # Decoding (reverse pipeline) — static so decoder can call it
-    # ------------------------------------------------------------------
 
     def decode_sequence(self, seq: str, start_bases: list[str]) -> bytes:
         """
@@ -231,27 +165,21 @@ class DNAEncoder:
         enforcer = self.enforcer
         block_size = self.block_size
 
-        # 1. Recover dibits block by block
         dibits: list[int] = []
         for i, start_base in enumerate(start_bases):
             block_seq = seq[i * block_size : (i + 1) * block_size]
             dibits.extend(enforcer.rotation_decode(block_seq, start_base=start_base))
 
-        # 2. dibits → bytes
-        # Trim dibits to multiple of 4 (safety)
         trim = len(dibits) - (len(dibits) % 4)
         payload = dibits_to_bytes(dibits[:trim])
 
-        # 3. Parse header
         magic, data_len = struct.unpack(HEADER_FMT, payload[:HEADER_SIZE])
         if magic != MAGIC:
             raise ValueError(f"Bad magic bytes: {magic!r} (expected {MAGIC!r})")
 
-        # 4. Extract data and digest
         data = payload[HEADER_SIZE : HEADER_SIZE + data_len]
         stored_digest = payload[HEADER_SIZE + data_len : HEADER_SIZE + data_len + DIGEST_SIZE]
 
-        # 5. Verify integrity
         actual_digest = hashlib.sha256(data).digest()
         if actual_digest != stored_digest:
             raise ValueError(
@@ -261,10 +189,6 @@ class DNAEncoder:
             )
 
         return data
-
-    # ------------------------------------------------------------------
-    # Reporting
-    # ------------------------------------------------------------------
 
     def constraint_report(self, seq: str, sample_size: int = 5) -> dict:
         """
