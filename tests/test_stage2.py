@@ -1,21 +1,3 @@
-"""
-tests/test_stage2.py — Test suite for oligos.py (Stage 2).
-
-Run with:
-    cd dna_codec && python -m pytest tests/test_stage2.py -v
-
-Coverage
---------
-  - tm_nearest_neighbor: known sequences, range sanity
-  - validate_primer: Tm, GC, hairpin checks
-  - design_primers: returns valid pair
-  - _int_to_bases / _bases_to_int: round-trip for index encoding
-  - OligoPool.fragment: structure, length, index field, overlap
-  - OligoPool.assemble: ordered & disordered reconstruction
-  - FASTA round-trip: write + read + verify
-  - Integration: encoder → fragment → assemble → decoder round-trip
-"""
-
 from __future__ import annotations
 
 import os
@@ -39,31 +21,19 @@ from dna_codec.codec.oligos import (
     design_primers,
 )
 
-
-# ===========================================================================
-# Fixtures
-# ===========================================================================
-
 @pytest.fixture
 def pool() -> OligoPool:
     """Standard pool: 150 nt oligos, 20 nt overlap, 20 nt primers, 8 nt index."""
     return OligoPool(oligo_len=150, overlap=20, primer_len=20, index_len=8)
 
-
 @pytest.fixture
 def encoder() -> DNAEncoder:
     return DNAEncoder(block_size=200)
-
 
 @pytest.fixture
 def small_pool() -> OligoPool:
     """Smaller oligos for fast tests."""
     return OligoPool(oligo_len=100, overlap=10, primer_len=15, index_len=6)
-
-
-# ===========================================================================
-# 1. Index encoding / decoding
-# ===========================================================================
 
 class TestIndexEncoding:
     def test_zero(self):
@@ -73,7 +43,6 @@ class TestIndexEncoding:
         assert _int_to_bases(1, 4) == "AAAC"
 
     def test_max(self):
-        # 4^4 - 1 = 255 → TTTT
         assert _int_to_bases(255, 4) == "TTTT"
 
     def test_round_trip(self):
@@ -85,17 +54,12 @@ class TestIndexEncoding:
 
     def test_overflow_raises(self):
         with pytest.raises(ValueError, match="too large"):
-            _int_to_bases(256, 4)  # max for width=4 is 255
+            _int_to_bases(256, 4)
 
     def test_random_round_trip(self):
         for _ in range(50):
             v = random.randint(0, 4**8 - 1)
             assert _bases_to_int(_int_to_bases(v, 8)) == v
-
-
-# ===========================================================================
-# 2. Flags encoding
-# ===========================================================================
 
 class TestFlagsEncoding:
     def test_all_bases(self):
@@ -108,14 +72,8 @@ class TestFlagsEncoding:
         codes = list(_FLAG_ENC.values())
         assert len(codes) == len(set(codes))
 
-
-# ===========================================================================
-# 3. Tm nearest-neighbor
-# ===========================================================================
-
 class TestTmNearestNeighbor:
     def test_typical_range(self):
-        # A typical 20-mer primer should have Tm in [50, 75] °C
         seq = "ACGTACGTACGTACGTACGT"
         tm = tm_nearest_neighbor(seq)
         assert 45.0 <= tm <= 80.0, f"Tm={tm:.1f} out of expected range"
@@ -136,27 +94,19 @@ class TestTmNearestNeighbor:
     def test_empty_returns_zero(self):
         assert tm_nearest_neighbor("") == 0.0
 
-
-# ===========================================================================
-# 4. Primer validation
-# ===========================================================================
-
 class TestValidatePrimer:
     def test_good_primer(self):
-        # Pre-validated 20-mer with ~50% GC
         seq = "ACGTAGCTGATCGTACGAGT"
         ok, reasons = validate_primer(seq, tm_min=50.0, tm_max=75.0)
         assert ok, f"Expected valid primer, got reasons: {reasons}"
 
     def test_homopolymer_fails(self):
-        # AAAAAAAAAAAAAAAAAAAA — homopolymer run of 20
         seq = "A" * 20
         ok, reasons = validate_primer(seq)
         assert not ok
         assert any("homopolymer" in r or "GC" in r or "Tm" in r for r in reasons)
 
     def test_tm_too_low(self):
-        # Very short sequence → low Tm
         seq = "ACGT"
         ok, reasons = validate_primer(seq, tm_min=55.0)
         assert not ok
@@ -164,13 +114,7 @@ class TestValidatePrimer:
     def test_all_gc_fails_tm_or_gc(self):
         seq = "GCGCGCGCGCGCGCGCGCGC"
         ok, reasons = validate_primer(seq)
-        # GC=100% fails GC constraint
         assert not ok
-
-
-# ===========================================================================
-# 5. Primer design
-# ===========================================================================
 
 class TestDesignPrimers:
     def test_returns_two_strings(self, encoder: DNAEncoder):
@@ -188,23 +132,15 @@ class TestDesignPrimers:
         assert ok_r, f"rev invalid: {reasons_r}"
 
     def test_short_seed_uses_defaults(self):
-        # Seed too short → always falls back to defaults
         fwd, rev = design_primers("ACGT", primer_len=20)
         assert len(fwd) == 20
         assert len(rev) == 20
 
-
-# ===========================================================================
-# 6. OligoPool configuration
-# ===========================================================================
-
 class TestOligoPoolConfig:
     def test_payload_len_calculated(self, pool: OligoPool):
-        # 150 − 2*20 − 8 − 2 = 100
         assert pool.payload_len == 100
 
     def test_stride_calculated(self, pool: OligoPool):
-        # 100 − 20 = 80
         assert pool.stride == 80
 
     def test_info_keys(self, pool: OligoPool):
@@ -219,12 +155,6 @@ class TestOligoPoolConfig:
     def test_overlap_too_large_raises(self):
         with pytest.raises(ValueError, match="stride"):
             OligoPool(oligo_len=150, overlap=110, primer_len=20, index_len=8)
-            # payload_len=100, overlap=110 → stride = -10
-
-
-# ===========================================================================
-# 7. OligoPool.fragment — oligo structure
-# ===========================================================================
 
 class TestFragment:
     def test_oligo_count(self, pool: OligoPool, encoder: DNAEncoder):
@@ -307,18 +237,12 @@ class TestFragment:
         pool = OligoPool(oligo_len=150, overlap=5, primer_len=20, index_len=8)
         assert pool.info()["max_oligos"] == 65536
 
-
-# ===========================================================================
-# 8. OligoPool.assemble — reconstruction
-# ===========================================================================
-
 class TestAssemble:
     def test_ordered_reconstruction(self, pool: OligoPool, encoder: DNAEncoder):
         data = os.urandom(400)
         master = encoder.encode_bytes(data)
         oligos = pool.fragment(master, encoder.start_bases)
         rebuilt, _ = pool.assemble(oligos)
-        # Master seq should be a prefix of rebuilt (padding may extend it)
         assert rebuilt[:len(master)] == master
 
     def test_disordered_reconstruction(self, pool: OligoPool, encoder: DNAEncoder):
@@ -335,7 +259,7 @@ class TestAssemble:
         data = os.urandom(300)
         master = encoder.encode_bytes(data)
         oligos = pool.fragment(master, encoder.start_bases)
-        doubled = oligos + oligos  # every oligo appears twice
+        doubled = oligos + oligos
         random.shuffle(doubled)
         rebuilt, _ = pool.assemble(doubled)
         assert rebuilt[:len(master)] == master
@@ -345,14 +269,8 @@ class TestAssemble:
         master = encoder.encode_bytes(data)
         oligos = pool.fragment(master, encoder.start_bases)
         _, recovered_sbs = pool.assemble(oligos)
-        # One start_base per oligo; should match originals
         for i, o in enumerate(oligos):
             assert recovered_sbs[i] == o.start_base
-
-
-# ===========================================================================
-# 9. FASTA I/O
-# ===========================================================================
 
 class TestFASTARoundTrip:
     def test_write_read_roundtrip(self, pool: OligoPool, encoder: DNAEncoder, tmp_path):
@@ -382,7 +300,6 @@ class TestFASTARoundTrip:
 
         content = fasta_path.read_text()
         lines = content.strip().split("\n")
-        # Every other line starting from 0 should be a header
         headers = [l for l in lines if l.startswith(">")]
         assert len(headers) == len(oligos)
         for h in headers:
@@ -391,7 +308,6 @@ class TestFASTARoundTrip:
     def test_discard_corrupted_primer(self, pool: OligoPool, encoder: DNAEncoder, tmp_path):
         """FASTA read should still work even if header fields are minimal."""
         fasta_path = tmp_path / "minimal.fasta"
-        # Write a minimal FASTA with no extra header fields
         fasta_path.write_text(
             ">oligo_000000\n"
             + pool.primer_fwd
@@ -405,11 +321,6 @@ class TestFASTARoundTrip:
         assert len(loaded) == 1
         assert loaded[0].index == 0
 
-
-# ===========================================================================
-# 10. Integration: full encode → fragment → assemble → decode
-# ===========================================================================
-
 class TestFullPipeline:
     def test_round_trip_small(self, pool: OligoPool, encoder: DNAEncoder):
         data = b"Integration test payload 12345"
@@ -417,7 +328,6 @@ class TestFullPipeline:
         oligos = pool.fragment(master, encoder.start_bases)
         rebuilt_master, rebuilt_sbs = pool.assemble(oligos)
 
-        # Trim to master length before decode
         recovered = encoder.decode_sequence(rebuilt_master[:len(master)], encoder.start_bases)
         assert recovered == data
 
@@ -429,7 +339,6 @@ class TestFullPipeline:
         master = enc.encode_bytes(data)
         oligos = pl.fragment(master, enc.start_bases)
 
-        # Shuffle to simulate unordered sequencing reads
         random.shuffle(oligos)
         rebuilt_master, _ = pl.assemble(oligos)
 
