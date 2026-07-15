@@ -1,76 +1,3 @@
-"""
-oligos.py — Oligonucleotide fragmentation, indexing and primer design.
-
-Each oligo has the physical structure:
-
-    5'─[primer_fwd]─[index]─[start_base_flags]─[payload]─[primer_rev_rc]─3'
-       ◄── P nt ──►◄── I nt ──►◄── F nt ──►◄──── L nt ─────►◄──── P nt ────►
-
-Where:
-  P  = primer length (default 20 nt, chosen for Tm 55–65 °C)
-  I  = index field length in bases (default 8 nt → can address 4^8 = 65 536 oligos)
-  F  = flags field (2 nt: encodes start_base for this oligo's payload block)
-  L  = payload length = oligo_len − 2*P − I − F  (default 200 − 40 − 8 − 2 = 110 nt)
-
-The payload of consecutive oligos overlaps by `overlap` bases (default 20 nt).
-This means each oligo's payload contains `overlap` nt that are also present in
-the neighbouring oligo, enabling base-level consensus voting during decoding.
-
-Fragmentation algorithm
------------------------
-  master_seq is split into windows of size `payload_len` advancing by
-  `stride = payload_len − overlap` bases.  The last window is zero-padded
-  if necessary (pad bases are encoded as 'A' and stripped by the decoder
-  using the length stored in the encoder header).
-
-Primer design
--------------
-  A single pair of universal primers is generated once per pool.
-  Tm is estimated with the nearest-neighbor simplified formula:
-
-      Tm = 81.5 + 16.6·log10([Na+]) + 0.41·(%GC) − 675/L   [°C]
-
-  where [Na+] = 0.05 M (50 mM, typical PCR buffer), L = primer length.
-  Primers are checked for:
-    • Tm ∈ [55, 65] °C
-    • GC content ∈ [40, 60] %
-    • No self-complementarity (3'-end ≥ 4 nt should not form hairpins)
-    • No homopolymer > 3
-
-  If a candidate primer fails, the generator tries the next window of the
-  master sequence until a valid primer is found.
-
-Index encoding
---------------
-  The oligo position index is encoded as a fixed-width base-4 number:
-      index i  →  I bases where base_j = (i >> 2*(I−1−j)) & 3
-  mapped via {0→A, 1→C, 2→G, 3→T}.
-  This is decoded back to an integer by the reverse map.
-
-Flags field (2 nt)
-------------------
-  2 bases encode the start_base used by the rotation encoder for this payload
-  block: A→AA, C→AC, G→AG, T→AT.  (Only the first base of the 2-nt flags
-  carries information; the second is always A as a parity/sync marker.)
-
-References
-----------
-  Organick et al., Nature Biotechnology 2018.
-  Church et al., Science 2012.
-  SantaLucia (1998). A unified view of polymer, dumbbell, and oligonucleotide
-    DNA nearest-neighbor thermodynamics. PNAS, 95(4), 1460–1465.
-
-Public API
-----------
-  OligoPool(oligo_len, overlap, primer_len, index_len) — configuration
-  pool.fragment(master_seq, start_bases)  → list[Oligo]
-  pool.assemble(oligos)                   → (master_seq, start_bases)
-  pool.write_fasta(oligos, path)
-  pool.read_fasta(path)                   → list[Oligo]
-  design_primers(seed_seq, primer_len)    → (fwd, rev)
-  tm_nearest_neighbor(seq)                → float  [°C]
-"""
-
 from __future__ import annotations
 
 import math
@@ -81,16 +8,11 @@ from typing import Optional
 
 from .constraints import ConstraintChecker, reverse_complement
 
-# ---------------------------------------------------------------------------
-# Base encoding for index field
-# ---------------------------------------------------------------------------
 _IDX_BASES = ["A", "C", "G", "T"]
 _IDX_MAP   = {b: i for i, b in enumerate(_IDX_BASES)}
 
-# Flags: start_base → 2-nt code
 _FLAG_ENC = {"A": "AA", "C": "AC", "G": "AG", "T": "AT"}
 _FLAG_DEC = {v: k for k, v in _FLAG_ENC.items()}
-
 
 def _int_to_bases(value: int, width: int) -> str:
     """Encode *value* as a base-4 number of exactly *width* bases."""
@@ -105,7 +27,6 @@ def _int_to_bases(value: int, width: int) -> str:
         value >>= 2
     return "".join(reversed(bases))
 
-
 def _bases_to_int(seq: str) -> int:
     """Decode a base-4 encoded string to an integer."""
     result = 0
@@ -113,13 +34,6 @@ def _bases_to_int(seq: str) -> int:
         result = (result << 2) | _IDX_MAP[b]
     return result
 
-
-# ---------------------------------------------------------------------------
-# Nearest-neighbor Tm (simplified SantaLucia 1998)
-# ---------------------------------------------------------------------------
-
-# ΔH (kcal/mol) and ΔS (cal/mol·K) for each nearest-neighbor pair
-# Order: 5'→3' dinucleotide
 _NN_DH: dict[str, float] = {
     "AA": -7.9,  "AT": -7.2,  "AC": -8.4,  "AG": -7.8,
     "TA": -7.2,  "TT": -7.9,  "TC": -8.2,  "TG": -8.5,
@@ -132,9 +46,8 @@ _NN_DS: dict[str, float] = {
     "CA": -22.7, "CT": -21.0, "CC": -19.9, "CG": -27.2,
     "GA": -22.2, "GT": -22.4, "GC": -24.4, "GG": -19.9,
 }
-_R = 1.987          # cal/(mol·K)
-_OLIGO_CONC = 250e-9  # 250 nM (typical PCR)
-
+_R = 1.987
+_OLIGO_CONC = 250e-9
 
 def tm_nearest_neighbor(seq: str, na_conc: float = 0.05) -> float:
     """
@@ -157,26 +70,18 @@ def tm_nearest_neighbor(seq: str, na_conc: float = 0.05) -> float:
     if n < 2:
         return 0.0
 
-    dh_total = 0.1     # initiation kcal/mol (approx)
-    ds_total = -2.8    # initiation cal/mol·K
+    dh_total = 0.1
+    ds_total = -2.8
 
     for i in range(n - 1):
         dinuc = seq[i : i + 2]
         dh_total += _NN_DH.get(dinuc, -8.0)
         ds_total += _NN_DS.get(dinuc, -21.5)
 
-    # Salt correction: ΔS_corrected = ΔS + 0.368·(n−1)·ln([Na+])
     ds_corrected = ds_total + 0.368 * (n - 1) * math.log(na_conc)
 
-    # Tm (K) = ΔH / (ΔS + R·ln(C_T/4))
-    # C_T = total strand concentration; for non-self-complementary: /4
     tm_k = (dh_total * 1000) / (ds_corrected + _R * math.log(_OLIGO_CONC / 4.0))
     return tm_k - 273.15
-
-
-# ---------------------------------------------------------------------------
-# Primer validation
-# ---------------------------------------------------------------------------
 
 def _has_3prime_hairpin(seq: str, min_len: int = 4) -> bool:
     """
@@ -185,7 +90,6 @@ def _has_3prime_hairpin(seq: str, min_len: int = 4) -> bool:
     """
     tail = reverse_complement(seq[-min_len:])
     return tail in seq[:-min_len]
-
 
 def validate_primer(seq: str, tm_min: float = 55.0, tm_max: float = 65.0) -> tuple[bool, list[str]]:
     """
@@ -211,18 +115,10 @@ def validate_primer(seq: str, tm_min: float = 55.0, tm_max: float = 65.0) -> tup
 
     return len(reasons) == 0, reasons
 
-
-# ---------------------------------------------------------------------------
-# Primer design
-# ---------------------------------------------------------------------------
-
-# Hardcoded universal primers (validated: Tm ≈ 60–62°C, GC ≈ 50%)
-# These are synthetic sequences not matching any known genome.
 _DEFAULT_PRIMERS = {
-    "fwd": "ACGTAGCTGATCGTACGAGT",   # 20-mer, Tm ≈ 60 °C
-    "rev": "TGCATCGACTAGCATGCTCA",   # 20-mer, rev_comp of fwd-like
+    "fwd": "ACGTAGCTGATCGTACGAGT",
+    "rev": "TGCATCGACTAGCATGCTCA",
 }
-
 
 def design_primers(
     seed_seq: str,
@@ -265,8 +161,7 @@ def design_primers(
             attempts += 1
             continue
 
-        # Rev primer anneals downstream, synthesized as rev_comp
-        rev_start = start + primer_len + 10  # small gap
+        rev_start = start + primer_len + 10
         if rev_start + primer_len > n:
             attempts += 1
             continue
@@ -277,13 +172,7 @@ def design_primers(
             return fwd, rev
         attempts += 1
 
-    # Fall back to pre-validated universal primers
     return _DEFAULT_PRIMERS["fwd"], _DEFAULT_PRIMERS["rev"]
-
-
-# ---------------------------------------------------------------------------
-# Oligo dataclass
-# ---------------------------------------------------------------------------
 
 @dataclass
 class Oligo:
@@ -336,11 +225,6 @@ class Oligo:
         )
         return f"{header}\n{self.full_seq}\n"
 
-
-# ---------------------------------------------------------------------------
-# OligoPool — main fragmentation engine
-# ---------------------------------------------------------------------------
-
 class OligoPool:
     """
     Fragment a master DNA sequence into a pool of oligos ready for synthesis.
@@ -363,7 +247,7 @@ class OligoPool:
         Reverse primer (as it appears on the oligo, i.e. rev_comp of annealing site).
     """
 
-    FLAGS_LEN: int = 2  # encodes start_base
+    FLAGS_LEN: int = 2
 
     def __init__(
         self,
@@ -400,10 +284,6 @@ class OligoPool:
         self.tm_fwd = tm_nearest_neighbor(self.primer_fwd)
         self.tm_rev = tm_nearest_neighbor(self.primer_rev_rc)
 
-    # ------------------------------------------------------------------
-    # Fragmentation
-    # ------------------------------------------------------------------
-
     def fragment(
         self,
         master_seq: str,
@@ -436,11 +316,8 @@ class OligoPool:
 
             is_padded = end > n
             if is_padded:
-                # Zero-pad with 'A' (encodes dibit 00 harmlessly)
                 chunk = chunk.ljust(self.payload_len, "A")
 
-            # Determine start_base: from the block that covers `pos`
-            # The encoder uses block_size = len(master_seq) / len(start_bases)
             block_size = len(master_seq) // len(start_bases) if start_bases else self.payload_len
             block_idx  = min(pos // block_size, len(start_bases) - 1) if start_bases else 0
             sb = start_bases[block_idx] if start_bases else "A"
@@ -490,10 +367,6 @@ class OligoPool:
             is_padded=is_padded,
         )
 
-    # ------------------------------------------------------------------
-    # Assembly (decode direction)
-    # ------------------------------------------------------------------
-
     def assemble(self, oligos: list[Oligo]) -> tuple[str, list[str]]:
         """
         Reconstruct the master sequence from a (possibly disordered) pool of
@@ -512,7 +385,6 @@ class OligoPool:
         if not oligos:
             return "", []
 
-        # --- Group by index (handle duplicates via consensus) ----------
         by_index: dict[int, list[str]] = {}
         start_base_map: dict[int, str] = {}
 
@@ -523,9 +395,6 @@ class OligoPool:
 
         max_idx = max(by_index.keys())
 
-        # --- Build per-position vote arrays ---------------------------
-        # master_seq is assembled position-by-position.
-        # Overlapping regions are voted on: most-frequent base wins.
         total_len = self.stride * max_idx + self.payload_len
         votes: list[dict[str, int]] = [{} for _ in range(total_len)]
 
@@ -537,27 +406,16 @@ class OligoPool:
                     if pos < total_len:
                         votes[pos][base] = votes[pos].get(base, 0) + 1
 
-        # --- Consensus: pick most voted base; tie → first alphabetically
         master_seq = "".join(
             max(vote, key=lambda b: (vote[b], -ord(b))) if vote else "A"
             for vote in votes
         )
 
-        # --- Recover start_bases in order ----------------------------
-        # Need one start_base per encoder block.  Use start_base_map to
-        # reconstruct; gaps filled with 'A'.
         start_bases: list[str] = [
             start_base_map.get(i, "A") for i in range(max_idx + 1)
         ]
-        # Note: decoder maps oligo start_bases back to encoder blocks,
-        # so the relationship is 1:1 when payload_len == encoder block_size.
-        # For the general case, the decoder handles re-mapping.
 
         return master_seq, start_bases
-
-    # ------------------------------------------------------------------
-    # FASTA I/O
-    # ------------------------------------------------------------------
 
     def write_fasta(self, oligos: list[Oligo], path: str | Path) -> None:
         """Write the oligo pool to a FASTA file."""
@@ -575,15 +433,13 @@ class OligoPool:
         oligos: list[Oligo] = []
         header: dict = {}
         seq_lines: list[str] = []
-        in_record: list[bool] = [False]  # mutable sentinel for nonlocal access
+        in_record: list[bool] = [False]
 
         def _flush() -> None:
             if not in_record[0] or not seq_lines:
                 return
             full_seq = "".join(seq_lines).upper().strip()
-            # Strip primers
             inner = full_seq[self.primer_len : len(full_seq) - self.primer_len]
-            # Parse index field
             index_str = inner[: self.index_len]
             flags_str = inner[self.index_len : self.index_len + self.FLAGS_LEN]
             payload   = inner[self.index_len + self.FLAGS_LEN :]
@@ -615,7 +471,6 @@ class OligoPool:
                     _flush()
                     seq_lines = []
                     in_record[0] = True
-                    # Parse header fields: key=value space-separated
                     header = {}
                     parts = line[1:].split()
                     for part in parts[1:]:
@@ -627,10 +482,6 @@ class OligoPool:
 
         _flush()
         return oligos
-
-    # ------------------------------------------------------------------
-    # Info
-    # ------------------------------------------------------------------
 
     def info(self) -> dict:
         """Return a summary of pool configuration."""
