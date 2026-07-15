@@ -1,0 +1,74 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+*.egg
+wheels/
+pip-wheel-metadata/
+
+# --- Entornos virtuales ---
+.venv/
+venv/
+env/
+ENV/
+.python-version
+
+# --- Testing / cobertura ---
+.pytest_cache/
+.cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+*.cover
+.hypothesis/
+.tox/
+.nox/
+
+# --- Type checkers / linters ---
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.ruff_cache/
+.pyre/
+
+# --- Jupyter (por si se usa para exploración) ---
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# --- Artefactos del propio pipeline dna_codec ---
+# Imágenes/archivos de entrada y salida usados al probar el codec
+# (evita versionar payloads binarios grandes por accidente)
+*.dna_pool
+*.oligos.json
+recuperada.*
+recovered_*.png
+recovered_*.jpg
+recovered_*.jpeg
+*_recovered.*
+/scratch/
+/tmp_runs/
+
+# --- Editores / IDEs ---
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# --- Variables de entorno / secretos ---
+.env
+.env.*
+*.local
+
+# --- Logs ---
+*.log
+logs/
