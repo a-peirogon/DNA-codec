@@ -1,18 +1,3 @@
-"""
-tests/test_stage1.py — Test suite for encoder.py and constraints.py (Stage 1).
-
-Run with:
-    cd dna_codec && python -m pytest tests/test_stage1.py -v
-
-Coverage
---------
-  - ConstraintChecker: GC content, homopolymer detection, palindrome detection
-  - ConstraintEnforcer: rotation encoding round-trip
-  - DNAEncoder: encode_bytes → decode_sequence round-trip
-  - Edge cases: empty bytes, single byte, 1 MB random payload
-  - Constraint satisfaction of encoded sequences
-"""
-
 from __future__ import annotations
 
 import os
@@ -36,31 +21,17 @@ from dna_codec.codec.encoder import (
     dibits_to_bytes,
 )
 
-
-# ===========================================================================
-# Fixtures
-# ===========================================================================
-
-
 @pytest.fixture
 def checker() -> ConstraintChecker:
     return ConstraintChecker(gc_min=0.40, gc_max=0.60, max_homopolymer=3, max_palindrome=6)
-
 
 @pytest.fixture
 def enforcer(checker: ConstraintChecker) -> ConstraintEnforcer:
     return ConstraintEnforcer(checker)
 
-
 @pytest.fixture
 def encoder() -> DNAEncoder:
     return DNAEncoder(block_size=200)
-
-
-# ===========================================================================
-# 1. reverse_complement
-# ===========================================================================
-
 
 class TestReverseComplement:
     def test_single_base(self):
@@ -70,22 +41,14 @@ class TestReverseComplement:
         assert reverse_complement("G") == "C"
 
     def test_known_sequence(self):
-        # 5'-AACGT-3' → complement 3'-TTGCA-5' → reverse 5'-ACGTT-3'
         assert reverse_complement("AACGT") == "ACGTT"
 
     def test_palindrome_detection(self):
-        # GAATTC is a palindrome (EcoRI site)
         seq = "GAATTC"
         assert reverse_complement(seq) == seq
 
     def test_empty(self):
         assert reverse_complement("") == ""
-
-
-# ===========================================================================
-# 2. ConstraintChecker — GC content
-# ===========================================================================
-
 
 class TestGCContent:
     def test_all_gc(self, checker: ConstraintChecker):
@@ -101,26 +64,20 @@ class TestGCContent:
         assert checker.gc_content("") == 0.0
 
     def test_gc_pass(self, checker: ConstraintChecker):
-        seq = "ACGTACGT"  # 50 % GC
+        seq = "ACGTACGT"
         report = checker.check(seq)
         assert report.gc_ok
         assert report.gc_content == pytest.approx(0.5)
 
     def test_gc_fail_low(self, checker: ConstraintChecker):
-        seq = "AAAATTTT"  # 0 % GC
+        seq = "AAAATTTT"
         report = checker.check(seq)
         assert not report.gc_ok
 
     def test_gc_fail_high(self, checker: ConstraintChecker):
-        seq = "GGGGCCCC"  # 100 % GC
+        seq = "GGGGCCCC"
         report = checker.check(seq)
         assert not report.gc_ok
-
-
-# ===========================================================================
-# 3. ConstraintChecker — Homopolymer runs
-# ===========================================================================
-
 
 class TestHomopolymer:
     def test_no_run(self, checker: ConstraintChecker):
@@ -133,84 +90,58 @@ class TestHomopolymer:
         assert checker.longest_homopolymer("AAAACGT") == 4
 
     def test_run_ok(self, checker: ConstraintChecker):
-        seq = "AAACGT"  # run of 3, limit is 3
+        seq = "AAACGT"
         report = checker.check(seq)
         assert report.homopolymer_ok
 
     def test_run_fail(self, checker: ConstraintChecker):
-        seq = "AAAACGT"  # run of 4 > 3
+        seq = "AAAACGT"
         report = checker.check(seq)
         assert not report.homopolymer_ok
         assert any("homopolymer" in v for v in report.violations)
 
     def test_multiple_runs(self, checker: ConstraintChecker):
-        seq = "AACCGGTT"  # all runs of 2
+        seq = "AACCGGTT"
         assert checker.longest_homopolymer(seq) == 2
         assert checker.check(seq).homopolymer_ok
 
-
-# ===========================================================================
-# 4. ConstraintChecker — Palindromes
-# ===========================================================================
-
-
 class TestPalindrome:
     def test_known_palindrome_gaattc(self, checker: ConstraintChecker):
-        # GAATTC is a 6-mer palindrome (EcoRI site) — at the limit
         seq = "GAATTC"
         report = checker.check(seq)
         assert report.longest_palindrome == 6
-        # 6 == max_palindrome, so it should PASS (≤ not <)
         assert report.palindrome_ok
 
     def test_palindrome_too_long(self, checker: ConstraintChecker):
-        # AGATCT = BglII site (6-mer palindrome) padded with GC to make 8-mer
-        # GCAGATCTGC — let's find an 8-mer palindrome: AGATCTAGAT? No.
-        # Construct one: GCGAATTCGC → GCGAATTCGC rev_comp = GCGAATTCGC ✓
         seq = "GCGAATTCGC"
         rc = reverse_complement(seq)
-        # Verify it IS a palindrome
         assert seq == rc, f"{seq} != {rc}"
         report = checker.check(seq)
         assert report.longest_palindrome >= 8
         assert not report.palindrome_ok
 
     def test_no_palindrome(self, checker: ConstraintChecker):
-        seq = "AACCTG"  # no self-complementary substring ≥ 4
+        seq = "AACCTG"
         report = checker.check(seq)
         assert report.palindrome_ok
 
     def test_short_sequence(self, checker: ConstraintChecker):
-        # Sequence too short to have a 4-mer palindrome
         seq = "ACG"
         report = checker.check(seq)
         assert report.palindrome_ok
         assert report.longest_palindrome == 0
 
-
-# ===========================================================================
-# 5. ConstraintReport
-# ===========================================================================
-
-
 class TestConstraintReport:
     def test_passed_property(self, checker: ConstraintChecker):
-        good_seq = "ACGTACGT" * 5  # 40 bases, 50 % GC, no runs > 1, short palindromes
+        good_seq = "ACGTACGT" * 5
         report = checker.check(good_seq)
-        # Result depends on palindromes in the sequence; check property consistency
         assert report.passed == (report.gc_ok and report.homopolymer_ok and report.palindrome_ok)
 
     def test_violations_list(self, checker: ConstraintChecker):
-        bad_seq = "AAAAACCCC"  # run of 5 A's → homopolymer violation
+        bad_seq = "AAAAACCCC"
         report = checker.check(bad_seq)
         assert not report.passed
         assert len(report.violations) >= 1
-
-
-# ===========================================================================
-# 6. bytes_to_dibits / dibits_to_bytes (round-trip)
-# ===========================================================================
-
 
 class TestDibitConversion:
     def test_zero_byte(self):
@@ -220,7 +151,6 @@ class TestDibitConversion:
         assert bytes_to_dibits(b"\xFF") == [3, 3, 3, 3]
 
     def test_known_byte(self):
-        # 0xE4 = 11100100 → [3, 2, 1, 0]
         assert bytes_to_dibits(b"\xE4") == [3, 2, 1, 0]
 
     def test_round_trip_single_byte(self):
@@ -234,13 +164,7 @@ class TestDibitConversion:
 
     def test_dibits_to_bytes_raises_on_unaligned(self):
         with pytest.raises(ValueError, match="multiple of 4"):
-            dibits_to_bytes([0, 1, 2])  # length 3 is not multiple of 4
-
-
-# ===========================================================================
-# 7. ConstraintEnforcer — rotation round-trip
-# ===========================================================================
-
+            dibits_to_bytes([0, 1, 2])
 
 class TestRotationRoundTrip:
     def test_single_symbol(self, enforcer: ConstraintEnforcer):
@@ -271,8 +195,6 @@ class TestRotationRoundTrip:
 
     def test_no_homopolymer_run_aaaa(self, enforcer: ConstraintEnforcer):
         """Encoding 0,0,0,0,0 with rotation should NOT produce a run of 5."""
-        # All-zero dibits would naively map to AAAAA in raw encoding,
-        # but the rotation table should break homopolymers.
         bits = [0] * 20
         seq = enforcer.rotation_encode(bits, start_base="A")
         checker = ConstraintChecker()
@@ -282,18 +204,11 @@ class TestRotationRoundTrip:
 
     def test_best_start_base_improves_gc(self, enforcer: ConstraintEnforcer):
         """best_start_base should select the start that keeps GC near 50%."""
-        bits = bytes_to_dibits(b"\x00" * 50)  # heavily AT-biased raw
+        bits = bytes_to_dibits(b"\x00" * 50)
         best = enforcer.best_start_base(bits)
         seq = enforcer.rotation_encode(bits, start_base=best)
         gc = enforcer.checker.gc_content(seq)
-        # Should be closer to 50% than a random start
         assert 0.30 <= gc <= 0.70, f"GC={gc:.1%} for start_base={best}"
-
-
-# ===========================================================================
-# 8. DNAEncoder — encode_bytes / decode_sequence round-trip
-# ===========================================================================
-
 
 class TestDNAEncoder:
     def test_round_trip_empty(self, encoder: DNAEncoder):
@@ -350,7 +265,6 @@ class TestDNAEncoder:
         """Decoding with corrupted start_bases should raise (magic mismatch)."""
         data = b"test"
         seq = encoder.encode_bytes(data)
-        # Corrupt: use a different start base so rotation decode produces garbage
         bad_starts = [
             ("C" if s == "A" else "A")
             for s in encoder.start_bases
@@ -374,12 +288,6 @@ class TestDNAEncoder:
         assert "gc_mean" in report
         assert 0.0 <= report["gc_mean"] <= 1.0
 
-
-# ===========================================================================
-# 9. Integration — full file-like encode/decode with SHA-256 verification
-# ===========================================================================
-
-
 class TestIntegration:
     def test_encode_decode_text_file(self, encoder: DNAEncoder, tmp_path):
         """Encode a text file, decode it, verify SHA-256 matches."""
@@ -399,7 +307,7 @@ class TestIntegration:
         """GC content of each block should be within 40–60%."""
         data = os.urandom(2000)
         seq = encoder.encode_bytes(data)
-        checker = ConstraintChecker(gc_min=0.30, gc_max=0.70)  # slightly relaxed for test
+        checker = ConstraintChecker(gc_min=0.30, gc_max=0.70)
         block_size = encoder.block_size
         failures = []
         for i in range(0, len(seq), block_size):
@@ -412,10 +320,9 @@ class TestIntegration:
 
     def test_homopolymer_constraint(self, encoder: DNAEncoder):
         """No homopolymer run > 3 in the encoded sequence (by rotation encoding)."""
-        data = b"\x00" * 200  # worst case: all zeros → all-A without rotation
+        data = b"\x00" * 200
         seq = encoder.encode_bytes(data)
         checker = ConstraintChecker()
-        # Check in windows of 50
         for i in range(0, len(seq) - 50, 50):
             window = seq[i : i + 50]
             hp = checker.longest_homopolymer(window)
