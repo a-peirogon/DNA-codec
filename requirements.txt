@@ -1,0 +1,4 @@
+reedsolo>=1.7
+
+# Development / testing
+pytest>=7.0
