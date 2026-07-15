@@ -1,22 +1,3 @@
-"""
-tests/test_stage4.py — Test suite for decoder.py (Stage 4).
-
-Coverage
---------
-  - levenshtein: known pairs, symmetry, triangle inequality
-  - align_to_length: padding and trimming
-  - Primer alignment: exact and approximate (with indels)
-  - OligoParseResult: correct field extraction
-  - _base_consensus: voting logic
-  - _assemble_with_consensus: overlap voting, missing slots
-  - DNADecoder.decode: clean channel, dropout, substitutions
-  - DNADecoder.decode: with indels (requires alignment)
-  - DNADecoder.decode: with RS codec (full ECC pipeline)
-  - DNADecoder.decode_fasta: FASTA round-trip
-  - Full end-to-end pipeline: encode → fragment → RS → channel → decode
-  - SHA-256 verification: correct vs corrupted
-"""
-
 from __future__ import annotations
 
 import os
@@ -39,35 +20,25 @@ from dna_codec.codec.decoder import (
 from dna_codec.codec.ecc.reed_solomon import RSCodec
 from dna_codec.channel.simulator import ChannelSimulator
 
-
-# ===========================================================================
-# Fixtures
-# ===========================================================================
-
 @pytest.fixture
 def enc() -> DNAEncoder:
     return DNAEncoder(block_size=200)
-
 
 @pytest.fixture
 def pool() -> OligoPool:
     return OligoPool(oligo_len=150, overlap=20, primer_len=20, index_len=8)
 
-
 @pytest.fixture
 def rs() -> RSCodec:
     return RSCodec(redundancy=0.30, col_redundancy=0.25)
-
 
 @pytest.fixture
 def decoder(pool, enc) -> DNADecoder:
     return DNADecoder(pool=pool, encoder=enc)
 
-
 @pytest.fixture
 def decoder_rs(pool, enc, rs) -> DNADecoder:
     return DNADecoder(pool=pool, encoder=enc, rs_codec=rs)
-
 
 def make_pipeline(n_bytes: int = 300):
     enc   = DNAEncoder(block_size=200)
@@ -76,11 +47,6 @@ def make_pipeline(n_bytes: int = 300):
     master = enc.encode_bytes(data)
     oligos = pool.fragment(master, enc.start_bases)
     return enc, pool, data, master, oligos
-
-
-# ===========================================================================
-# 1. Levenshtein distance
-# ===========================================================================
 
 class TestLevenshtein:
     def test_equal_strings(self):
@@ -109,17 +75,11 @@ class TestLevenshtein:
         assert levenshtein(a, c) <= levenshtein(a, b) + levenshtein(b, c)
 
     def test_full_substitution(self):
-        # Every base different → distance = length
         assert levenshtein("AAAA", "TTTT") == 4
 
     def test_known_values(self):
         assert levenshtein("kitten", "sitting") == 3
         assert levenshtein("ACGTACGT", "ACGT") == 4
-
-
-# ===========================================================================
-# 2. align_to_length
-# ===========================================================================
 
 class TestAlignToLength:
     def test_exact_length(self):
@@ -137,11 +97,6 @@ class TestAlignToLength:
     def test_custom_fill(self):
         assert align_to_length("AT", 5, fill="C") == "ATCCC"
 
-
-# ===========================================================================
-# 3. Primer alignment helpers
-# ===========================================================================
-
 class TestPrimerAlignment:
     def test_exact_fwd_primer(self, pool: OligoPool):
         seq = pool.primer_fwd + "A" * 130
@@ -154,7 +109,6 @@ class TestPrimerAlignment:
         fwd_corrupted[3] = "A" if fwd_corrupted[3] != "A" else "C"
         seq = "".join(fwd_corrupted) + "X" * 100
         end = _find_primer_end(seq, pool.primer_fwd, max_edit=4)
-        # Should locate the end of the primer (position 20)
         assert end <= len(pool.primer_fwd) + 2
 
     def test_exact_rev_primer(self, pool: OligoPool):
@@ -169,11 +123,6 @@ class TestPrimerAlignment:
         seq = "A" * 80 + "".join(rev_corrupted)
         start = _find_primer_start(seq, pool.primer_rev_rc, max_edit=4)
         assert abs(start - 80) <= 3
-
-
-# ===========================================================================
-# 4. DNADecoder._parse_oligo (via decode internals)
-# ===========================================================================
 
 class TestParseOligo:
     def test_clean_oligo_parse(self, pool: OligoPool, enc: DNAEncoder):
@@ -196,7 +145,6 @@ class TestParseOligo:
         master = enc.encode_bytes(data)
         oligos = pool.fragment(master, enc.start_bases)
 
-        # Simulate a deletion in the payload area
         o = oligos[0]
         inner_start = pool.primer_len + pool.index_len + pool.FLAGS_LEN
         short_full  = o.full_seq[:inner_start] + o.payload[1:] + o.primer_rev_rc
@@ -210,15 +158,10 @@ class TestParseOligo:
         assert result is not None
         assert result.indel_detected
 
-
-# ===========================================================================
-# 5. Consensus and assembly
-# ===========================================================================
-
 class TestConsensusAssembly:
     def test_single_group_consensus(self, pool: OligoPool, enc: DNAEncoder, decoder: DNADecoder):
         from dna_codec.codec.decoder import OligoParseResult
-        payload = "ACGT" * 25   # 100 bases
+        payload = "ACGT" * 25
         group   = [OligoParseResult(
             raw_index=0, trusted_index=True,
             payload=payload, start_base="A",
@@ -229,7 +172,6 @@ class TestConsensusAssembly:
 
     def test_majority_vote_consensus(self, pool: OligoPool, enc: DNAEncoder, decoder: DNADecoder):
         from dna_codec.codec.decoder import OligoParseResult
-        # 3 copies agree on A, 1 disagrees → A wins
         make = lambda base: "ACGT" * 24 + "ACG" + base
         groups = [
             OligoParseResult(0, True, make("A"), "A", 0, False),
@@ -246,7 +188,6 @@ class TestConsensusAssembly:
         master = enc.encode_bytes(data)
         oligos = pool.fragment(master, enc.start_bases)
 
-        # Build grouped from oligos
         from dna_codec.codec.decoder import OligoParseResult
         grouped = {
             o.index: [OligoParseResult(
@@ -258,11 +199,6 @@ class TestConsensusAssembly:
         }
         rebuilt, sbs = decoder._assemble_with_consensus(grouped, len(oligos))
         assert rebuilt[:len(master)] == master
-
-
-# ===========================================================================
-# 6. DNADecoder.decode — clean channel
-# ===========================================================================
 
 class TestDecoderClean:
     def test_clean_round_trip(self, pool: OligoPool, enc: DNAEncoder):
@@ -315,11 +251,6 @@ class TestDecoderClean:
         s = report.summary()
         assert "OK" in s or "FAIL" in s
 
-
-# ===========================================================================
-# 7. DNADecoder.decode — dropout (missing oligos)
-# ===========================================================================
-
 class TestDecoderDropout:
     def test_decode_with_overlap_fills_small_gaps(self, pool: OligoPool, enc: DNAEncoder):
         """
@@ -331,13 +262,10 @@ class TestDecoderDropout:
         master = enc.encode_bytes(data)
         oligos = pool.fragment(master, enc.start_bases)
 
-        # Drop 2 non-adjacent oligos
         keep   = [o for o in oligos if o.index not in {2, 5}]
         dec    = DNADecoder(pool, enc)
         recovered, report = dec.decode(keep)
 
-        # With RS, recovered perfectly. Without RS, overlap may fill in.
-        # Since the lost positions are partially covered by neighbours:
         assert report.n_missing_indices > 0 or report.sha256_ok
 
     def test_decode_fasta_round_trip(self, pool: OligoPool, enc: DNAEncoder, tmp_path):
@@ -352,11 +280,6 @@ class TestDecoderDropout:
         assert report.sha256_ok
         assert recovered == data
 
-
-# ===========================================================================
-# 8. DNADecoder.decode — substitutions
-# ===========================================================================
-
 class TestDecoderSubstitutions:
     def test_low_sub_rate_recovered(self, pool: OligoPool, enc: DNAEncoder):
         """
@@ -367,7 +290,6 @@ class TestDecoderSubstitutions:
         master = enc.encode_bytes(data)
         oligos = pool.fragment(master, enc.start_bases)
 
-        # Triple the pool (3x coverage), then introduce low-rate substitutions
         sim  = ChannelSimulator(sub_rate=0.003, ins_rate=0, del_rate=0,
                                 dropout_rate=0, seed=42)
         tripled = oligos * 3
@@ -376,14 +298,8 @@ class TestDecoderSubstitutions:
 
         dec = DNADecoder(pool, enc)
         recovered, report = dec.decode(noisy)
-        # With 3x coverage and overlap consensus, should recover cleanly
         assert report.sha256_ok
         assert recovered == data
-
-
-# ===========================================================================
-# 9. Full ECC pipeline with RS
-# ===========================================================================
 
 class TestDecoderWithRS:
     def test_rs_level1_corrects_substitutions(self):
@@ -403,11 +319,9 @@ class TestDecoderWithRS:
         oligos = pl.fragment(master, enc.start_bases)
         orig_pl = len(oligos[0].payload)
 
-        # RS-encode, then clean channel (reorder only)
         encoded = rs.encode_pool(oligos)
         random.shuffle(encoded)
 
-        # RS-decode and assemble
         encoded.sort(key=lambda o: o.index)
         decoded_oligos, report = rs.decode_pool(encoded, orig_pl)
         assert report.decoded_ok == len(oligos)
@@ -433,36 +347,26 @@ class TestDecoderWithRS:
         encoded  = rs.encode_pool(oligos)
         extended = rs.add_column_parity(encoded, pl)
 
-        # Drop 3 data oligos
         drop_idx = [0, n_data // 2, n_data - 1]
         surviving = [o for o in extended if o.index not in drop_idx]
         random.shuffle(surviving)
 
-        # Sort back
         surviving.sort(key=lambda o: o.index)
         data_surv   = [o for o in surviving if o.index < n_data]
         parity_surv = [o for o in surviving if o.index >= n_data]
 
-        # Level 2: recover
         recovered_pool, n_rec = rs.recover_with_column_parity(
             data_surv + parity_surv, n_data, pl
         )
         assert n_rec == len(drop_idx)
 
-        # Level 1: decode
         decoded, rep = rs.decode_pool(recovered_pool, orig_pl)
         assert rep.decoded_ok == n_data
 
-        # Assemble
         decoded.sort(key=lambda o: o.index)
         rebuilt, _ = pl.assemble(decoded)
         final = enc.decode_sequence(rebuilt[:len(master)], enc.start_bases)
         assert final == data
-
-
-# ===========================================================================
-# 10. SHA-256 verification
-# ===========================================================================
 
 class TestSHA256Verification:
     def test_sha256_passes_on_clean(self, pool: OligoPool, enc: DNAEncoder):
@@ -477,7 +381,6 @@ class TestSHA256Verification:
         master = enc.encode_bytes(data)
         oligos = pool.fragment(master, enc.start_bases)
 
-        # Corrupt every payload byte in the first 4 oligos
         corrupted = []
         for o in oligos:
             if o.index < 4:
@@ -491,11 +394,6 @@ class TestSHA256Verification:
 
         _, report = DNADecoder(pool, enc).decode(corrupted)
         assert not report.sha256_ok
-
-
-# ===========================================================================
-# 11. Integration — full realistic end-to-end
-# ===========================================================================
 
 class TestEndToEnd:
     def test_full_pipeline_small(self):
@@ -525,11 +423,9 @@ class TestEndToEnd:
                                 dropout_rate=0.05, seed=123)
         noisy, stats = sim.simulate(oligos, reorder=True)
 
-        # Fill gaps with overlap-surviving neighbours via decoder
         dec = DNADecoder(pl, enc)
         recovered, report = dec.decode(noisy)
 
-        # Even with 5% dropout and no ECC, overlap covers many gaps
         assert report.sha256_ok or report.n_missing_indices > 0
 
     @pytest.mark.slow
