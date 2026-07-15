@@ -10,20 +10,7 @@ pip install -r requirements.txt
 
 Runtime dependency: [`reedsolo`](https://pypi.org/project/reedsolo/) (pure-Python RS over GF(2^8)).
 
-## Usage
 
-```bash
-python demo.py
-```
-
-## Tests
-
-```bash
-pytest tests/ -v
-pytest tests/ -m "not slow"   # skip large-payload runs
-```
-
-167 tests, all passing.
 
 ## Pipeline
 
@@ -47,8 +34,6 @@ Two-dimensional Reed-Solomon protection:
 
 - **Row parity** — per-oligo RS over GF(2^8); corrects up to `nsym/2` byte errors per oligo.
 - **Column parity** — cross-oligo RS; extra parity oligos appended to the pool reconstruct entirely dropped oligos (analogous to RAID-6). The pool is striped into groups of at most `g` oligos where `g + nsym ≤ 255`, satisfying the GF(2^8) codeword limit.
-
-`simulator.py` applies independent substitution, insertion, deletion, and dropout processes at configurable rates.
 
 ### Stage 4
 
