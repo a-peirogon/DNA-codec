@@ -1,22 +1,4 @@
 #!/usr/bin/env python3
-"""
-examples/image_roundtrip.py — Codifica una imagen (o cualquier archivo
-binario) a través del pipeline completo de dna_codec y la recupera de
-vuelta, verificando integridad byte a byte con SHA-256.
-
-Una imagen PNG/JPEG es simplemente una secuencia de bytes, así que
-funciona directamente con encode_bytes/decode_sequence sin cambiar nada
-del codec -- el mismo camino que un mensaje de texto.
-
-Uso:
-    python examples/image_roundtrip.py ruta/a/imagen.png
-    python examples/image_roundtrip.py ruta/a/imagen.png --dropout 0.10 --seed 7
-    python examples/image_roundtrip.py ruta/a/imagen.png --out recuperada.png
-
-Requiere que el bug de column-parity (add_column_parity /
-recover_with_column_parity) esté corregido para imágenes de tamaño
-realista (>255 oligos), ver dna_codec/codec/ecc/reed_solomon.py.
-"""
 
 from __future__ import annotations
 
@@ -28,7 +10,6 @@ from dna_codec.codec.encoder import DNAEncoder
 from dna_codec.codec.oligos import OligoPool
 from dna_codec.codec.ecc.reed_solomon import RSCodec
 from dna_codec.channel.simulator import ChannelSimulator
-
 
 def encode_decode_image(
     image_path: str,
@@ -54,7 +35,6 @@ def encode_decode_image(
 
     print(f"Imagen de entrada: {image_path} ({len(image_bytes)} bytes)")
 
-    # --- 1-2. Codificar bytes -> DNA y fragmentar en oligos ------------
     enc = DNAEncoder(block_size=200)
     pool = OligoPool(
         oligo_len=oligo_len, overlap=overlap,
@@ -68,14 +48,12 @@ def encode_decode_image(
     orig_payload_len = len(oligos[0].payload)
     print(f"Secuencia DNA: {len(master)} bases -> {n_data} oligos de datos")
 
-    # --- 3. Añadir redundancia Reed-Solomon (por-oligo + por-columna) --
     encoded = rs.encode_pool(oligos)
     extended = rs.add_column_parity(encoded, pool)
     n_parity = len(extended) - len(encoded)
     print(f"Oligos de paridad añadidos: {n_parity} "
           f"(total en el pool: {len(extended)})")
 
-    # --- 4. Simular canal ruidoso de síntesis/secuenciación ------------
     sim = ChannelSimulator(
         sub_rate=sub_rate, ins_rate=ins_rate, del_rate=del_rate,
         dropout_rate=dropout_rate, seed=seed,
@@ -84,7 +62,6 @@ def encode_decode_image(
     print(f"Oligos perdidos en el canal: {stats.n_dropped} / {stats.n_oligos_in} "
           f"({stats.dropout_rate:.1%})")
 
-    # --- 5. Recuperar con paridad de columna + decodificación RS -------
     noisy.sort(key=lambda o: o.index)
     data_n = [o for o in noisy if o.index < n_data]
     parity_n = [o for o in noisy if o.index >= n_data]
@@ -117,7 +94,6 @@ def encode_decode_image(
 
     return ok and sha_ok
 
-
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("image", help="Ruta a la imagen (o cualquier archivo binario)")
@@ -145,7 +121,6 @@ def main() -> int:
         col_redundancy=args.col_redundancy,
     )
     return 0 if ok else 1
-
 
 if __name__ == "__main__":
     sys.exit(main())
